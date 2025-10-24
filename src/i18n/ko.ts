@@ -1,0 +1,318 @@
+export const ko = {
+  common: {
+    search: '검색',
+    searchLabel: '검색어',
+    searchPlaceholder: '검색어를 입력하세요',
+    status: '상태',
+    start: '시작',
+    end: '종료',
+    apply: '적용',
+    cancel: '취소',
+    confirm: '확인',
+    close: '닫기',
+    retry: '다시 시도',
+    loading: '불러오는 중...',
+    empty: '표시할 데이터가 없습니다.',
+    unset: '미지정',
+    errors: {
+      default: '요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.',
+      network: '네트워크 연결을 확인해 주세요.',
+      unauthorized: '로그인 세션이 만료되었어요. 다시 로그인해 주세요.',
+      forbidden: '이 작업을 수행할 권한이 없어요.',
+      notFound: '요청한 리소스를 찾지 못했어요.',
+      conflict: '이미 처리된 요청이에요. 새로고침 후 다시 시도해 주세요.',
+      validation: '입력 값을 확인해 주세요.',
+      rateLimited: '요청이 너무 많아요. 잠시 후 다시 시도해 주세요.',
+      server: '서버에서 오류가 발생했어요. 잠시 후 다시 시도해 주세요.',
+    },
+  },
+  items: {
+    title: '상품',
+    description: '등록된 상품을 조회하고 관리할 수 있는 공간입니다.',
+    comingSoon: '이 기능은 곧 제공될 예정입니다.',
+  },
+  sales: {
+    title: '판매 주문',
+    description: 'Zoho 스타일 테이블에서 판매 주문을 조회하고 관리하세요.',
+    toolbar: {
+      searchPlaceholder: '주문 번호, 고객명 검색',
+      statusAll: '전체 상태',
+    },
+    status: {
+      draft: '임시 저장',
+      picking: '피킹 준비',
+      packed: '포장 완료',
+      shipped: '출고 완료',
+    },
+    table: {
+      columns: {
+        status: '상태',
+        customer: '고객',
+        customerFallback: '미지정',
+        orderNumber: '주문 번호',
+        orderDate: '주문일',
+        shipmentDate: '출고일',
+        totalAmount: '금액',
+      },
+      empty: {
+        default: '조건에 맞는 주문이 없습니다.',
+        error: '판매 주문 목록을 불러오지 못했어요.',
+        serverErrorDescription: '잠시 후 다시 시도하거나 문제가 계속되면 관리자에게 문의해 주세요.',
+      },
+    },
+    actions: {
+      create: '새 주문',
+      refresh: '새로고침',
+    },
+    bulk: {
+      selectedCount: (count: number) => `선택된 주문 ${count.toLocaleString('ko-KR')}건`,
+      description: '선택한 주문에 대해 필요한 작업을 진행하세요.',
+      confirm: '선택 주문 피킹 준비',
+      confirming: '피킹 준비 중...',
+      confirmOnlyHint: '선택된 주문이 모두 임시 저장 상태입니다. 피킹 준비 작업만 가능합니다.',
+      confirmDisabled: '임시 저장 상태의 주문만 피킹 준비로 전환할 수 있습니다.',
+      pack: '선택 주문 포장 완료',
+      packing: '포장 처리 중...',
+      packOnlyHint: '선택된 주문이 모두 피킹 준비 상태입니다. 포장 작업만 가능합니다.',
+      packDisabled: '피킹 준비 상태의 주문만 포장 완료로 전환할 수 있습니다.',
+      ship: '선택 주문 출고 처리',
+      shipping: '출고 처리 중...',
+      shipOnlyHint: '선택된 주문이 모두 포장 완료 상태입니다. 출고 처리가 가능합니다.',
+      shipDisabled: '포장 완료 상태의 주문만 출고 처리할 수 있습니다.',
+      mixedSelection: '선택된 주문의 상태가 서로 달라 일부 작업이 제한됩니다.',
+      viewDetails: '첫 번째 주문 상세 보기',
+      clear: '선택 해제',
+      processing: '선택한 주문을 처리하고 있습니다.',
+      errorPrefix: '오류: ',
+    },
+    errors: {
+      fetchFailed: '판매 주문 목록을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.',
+      bulkStatusFailed: '선택한 주문 상태를 업데이트하지 못했어요. 잠시 후 다시 시도해 주세요.',
+      detailUnavailable: '선택한 주문 정보를 찾지 못했어요.',
+    },
+    toast: {
+      created: '판매 주문이 생성되었어요.',
+      updated: '판매 주문이 업데이트되었어요.',
+      deleted: '판매 주문이 삭제되었어요.',
+      error: '요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.',
+      bulkStatusUpdated: (count: number) => `선택한 주문 ${count.toLocaleString('ko-KR')}건의 상태를 업데이트했어요.`,
+    },
+    drawer: {
+      createTitle: '새 판매 주문',
+      detailTitle: '판매 주문 상세',
+      summary: {
+        sectionTitle: '주문 정보',
+        customer: '고객',
+        status: '상태',
+        orderDate: '주문일',
+        shipmentDate: '출고 예정일',
+        totalAmount: '총 금액',
+        currency: '통화',
+      },
+      customer: {
+        label: '고객',
+        placeholder: '고객을 검색하세요',
+        empty: '검색 결과가 없습니다.',
+        select: '선택',
+      },
+      dates: {
+        order: '주문일',
+        shipment: '출고 예정일',
+      },
+      memo: {
+        label: '메모',
+        placeholder: '주문에 대한 메모를 입력하세요',
+      },
+      lineItems: {
+        title: '주문 품목',
+        empty: '등록된 품목이 없습니다.',
+        add: '품목 추가',
+        remove: '삭제',
+        columns: {
+          product: '제품',
+          sku: '품번',
+          quantity: '수량',
+          fulfilled: '출고 수량',
+          rate: '단가',
+          amount: '금액',
+          action: '작업',
+        },
+        productPlaceholder: '제품을 선택하세요',
+      },
+      validation: {
+        customerRequired: '고객을 선택해 주세요.',
+        lineProductRequired: '제품을 선택해 주세요.',
+        lineQuantityRequired: '수량을 입력해 주세요.',
+      },
+      formActions: {
+        submit: '저장',
+        submitting: '저장 중...',
+        cancel: '취소',
+        close: '닫기',
+      },
+      detailActions: {
+        edit: '주문 수정',
+        createInvoice: '송장 생성',
+        createReturn: '반품 생성',
+        fulfill: '출고 처리',
+      },
+      errors: {
+        loadFailed: '주문 정보를 불러오지 못했어요.',
+        submitFailed: '주문을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.',
+        shipFailed: '출고 처리를 완료하지 못했어요. 잠시 후 다시 시도해 주세요.',
+      },
+    },
+    invoiceDrawer: {
+      title: '송장 생성',
+      description: '선택한 주문 항목으로 송장을 작성하세요.',
+      searchPlaceholder: '제품 검색',
+      summary: {
+        customer: '고객',
+        orderNumber: '주문 번호',
+        totalAmount: '합계',
+        currency: '통화',
+      },
+      lineItems: {
+        title: '송장 품목',
+        add: '품목 추가',
+        columns: {
+          product: '제품',
+          quantity: '수량',
+          rate: '단가',
+        },
+      },
+      actions: {
+        submit: '송장 발행',
+        submitting: '발행 중...',
+        cancel: '취소',
+      },
+      errors: {
+        loadFailed: '주문 정보를 불러오지 못했어요.',
+        submitFailed: '송장을 발행하지 못했어요. 잠시 후 다시 시도해 주세요.',
+      },
+      success: '송장을 발행했어요.',
+    },
+    returnDrawer: {
+      title: '반품 생성',
+      description: '회수할 품목과 입고 위치를 지정하세요.',
+      lineItems: {
+        title: '반품 품목',
+        add: '반품 품목 추가',
+        columns: {
+          product: '제품',
+          quantity: '수량',
+          location: '입고 위치',
+        },
+        locationPlaceholder: '입고 위치 검색',
+        locationEmpty: '위치를 검색해 선택하세요.',
+        selectedLocation: (name: string, warehouse?: string) =>
+          `선택된 위치: ${name}${warehouse ? ` (${warehouse})` : ''}`,
+      },
+      actions: {
+        submit: '반품 생성',
+        submitting: '생성 중...',
+        cancel: '취소',
+      },
+      errors: {
+        loadFailed: '주문 정보를 불러오지 못했어요.',
+        submitFailed: '반품을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.',
+        locationLoadFailed: '입고 위치를 불러오지 못했어요.',
+      },
+      success: '반품이 생성되었어요.',
+    },
+  },
+  wh: {
+    title: '창고 관리',
+    description: '등록된 창고를 확인하고 새 창고를 추가하세요.',
+    create: '새 창고',
+    searchPlaceholder: '코드, 이름 또는 주소 검색',
+    drawerTitle: '새 창고',
+    drawerDescription: '창고 정보를 입력해 주세요.',
+    form: {
+      cancel: '취소',
+      submit: '저장',
+      submitting: '저장 중...',
+    },
+    transferOrders: {
+      title: '이동 지시서',
+      description: '창고 간 재고 이동 지시서를 조회하고 처리하세요.',
+      toolbar: {
+        searchPlaceholder: '이동 번호, 위치 검색',
+        statusAll: '전체 상태',
+        create: '새 이동 지시서',
+      },
+      status: {
+        draft: '임시 저장',
+        approved: '승인 완료',
+        completed: '이동 완료',
+      },
+      table: {
+        empty: '조건에 맞는 이동 지시서가 없습니다.',
+      },
+      actions: {
+        approve: '승인',
+        approveInProgress: '승인 중...',
+        complete: '완료',
+        completeInProgress: '완료 중...',
+      },
+      toast: {
+        approveSuccess: '이동 지시서를 승인했어요.',
+        approveError: '이동 지시서를 승인하지 못했어요.',
+        completeSuccess: '이동 지시서를 완료했어요.',
+        completeError: '이동 지시서를 완료하지 못했어요.',
+      },
+      errors: {
+        fetchFailed: '이동 지시서 목록을 불러오지 못했어요.',
+      },
+    },
+    table: {
+      columns: {
+        code: '코드',
+        name: '이름',
+        address: '주소',
+        addressEmpty: '미등록',
+      },
+      totalCount: '총 {count}개의 창고가 있습니다.',
+      empty: {
+        default: '등록된 창고가 없습니다.',
+        search: '검색 결과가 없습니다.',
+      },
+    },
+    placeholders: {
+      code: '예: WH-001',
+      name: '예: 메인 창고',
+      address: '예: 서울특별시 중구...',
+    },
+    validation: {
+      requiredCode: '코드를 입력해 주세요.',
+      requiredName: '이름을 입력해 주세요.',
+      checkRequiredFields: '필수 항목을 확인해 주세요.',
+      checkInputs: '입력값을 확인해 주세요.',
+      duplicateCode: '이미 사용 중인 코드입니다.',
+      duplicateCodeDescription: '코드가 중복되었습니다. 다른 코드를 입력해 주세요.',
+    },
+    errors: {
+      fetchFailed: '창고 목록을 불러오지 못했습니다.',
+      createFailed: '창고를 생성하지 못했습니다.',
+      createRetry: '창고를 생성하지 못했습니다. 다시 시도해 주세요.',
+    },
+  },
+  purchases: {
+    title: '매입',
+    comingSoon: '이 기능은 곧 제공될 예정입니다.',
+  },
+  returns: {
+    title: '반품',
+    comingSoon: '이 기능은 곧 제공될 예정입니다.',
+  },
+  reports: {
+    title: '리포트',
+    comingSoon: '이 기능은 곧 제공될 예정입니다.',
+  },
+} as const;
+
+export type PlaceholderCopy = {
+  title: string;
+  comingSoon: string;
+  description?: string;
+};

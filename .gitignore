@@ -1,0 +1,8 @@
+﻿node_modules/
+.env
+.env.local
+.env.*
+dist/
+build/
+.DS_Store
+env_local_backup_do_not_commit.txt

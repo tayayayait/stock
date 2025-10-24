@@ -1,0 +1,5 @@
+{
+  "name": "StockWise",
+  "description": "A simple, cloud-based inventory management app for small business owners that helps them track stock levels in real-time, reduce errors from manual tracking, and prevent stockouts.",
+  "requestFramePermissions": []
+}
