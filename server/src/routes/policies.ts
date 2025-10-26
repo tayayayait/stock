@@ -1,5 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import OpenAI from 'openai';
+import {
+  APIError,
+  APIConnectionError,
+  APIConnectionTimeoutError,
+} from 'openai/error';
 
 const apiKey = process.env.OPENAI_API_KEY;
 const openaiClient = apiKey ? new OpenAI({ apiKey }) : null;
@@ -249,11 +254,96 @@ export default async function policyRoutes(server: FastifyInstance) {
       return reply.send({ success: true, recommendation });
     } catch (error) {
       request.log.error(error, 'Failed to generate policy recommendation');
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : '정책 추천 생성 중 문제가 발생했습니다.';
-      return reply.code(500).send({ success: false, error: message });
+      const extractStatus = (err: unknown): number | undefined => {
+        if (!err) {
+          return undefined;
+        }
+        if (err instanceof APIError) {
+          return err.status ?? undefined;
+        }
+        const status = (err as { status?: unknown }).status;
+        if (typeof status === 'number' && Number.isFinite(status)) {
+          return status;
+        }
+        if (typeof status === 'string' && status.trim()) {
+          const parsed = Number(status);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+        const statusCode = (err as { statusCode?: unknown }).statusCode;
+        if (typeof statusCode === 'number' && Number.isFinite(statusCode)) {
+          return statusCode;
+        }
+        if (typeof statusCode === 'string' && statusCode.trim()) {
+          const parsed = Number(statusCode);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+        return undefined;
+      };
+
+      const isNetworkError = (err: unknown): boolean => {
+        if (!err) {
+          return false;
+        }
+        if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
+          return true;
+        }
+        const code = (err as { code?: unknown }).code;
+        const normalized = typeof code === 'string' ? code.toUpperCase() : '';
+        if (
+          normalized.includes('ENOTFOUND') ||
+          normalized.includes('ECONNRESET') ||
+          normalized.includes('ETIMEDOUT') ||
+          normalized.includes('ECONNREFUSED') ||
+          normalized.includes('EAI_AGAIN') ||
+          normalized.includes('CERT')
+        ) {
+          return true;
+        }
+        const message = (err as { message?: unknown }).message;
+        if (typeof message === 'string') {
+          const lower = message.toLowerCase();
+          return (
+            lower.includes('network') ||
+            lower.includes('fetch') ||
+            lower.includes('timeout') ||
+            lower.includes('getaddrinfo') ||
+            lower.includes('tls') ||
+            lower.includes('connection')
+          );
+        }
+        return false;
+      };
+
+      const statusFromError = extractStatus(error);
+      let status: number;
+      if (statusFromError === 401 || statusFromError === 403) {
+        status = 401;
+      } else if (statusFromError === 429) {
+        status = 429;
+      } else if (statusFromError && statusFromError >= 500 && statusFromError < 600) {
+        status = 503;
+      } else if (isNetworkError(error)) {
+        status = 503;
+      } else {
+        status = 500;
+      }
+
+      let message: string;
+      if (status === 401) {
+        message = 'LLM API 키가 유효하지 않습니다. 서버 환경 변수 OPENAI_API_KEY를 확인해 주세요.';
+      } else if (status === 429) {
+        message = 'LLM 호출이 일시적으로 제한되었습니다. 잠시 후 다시 시도해 주세요.';
+      } else if (status === 503) {
+        message = 'LLM 서비스에 연결할 수 없습니다. 네트워크 상태나 서비스 상태를 확인해 주세요.';
+      } else {
+        message = '정책 추천 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
+      }
+
+      return reply.code(status).send({ success: false, error: message });
     }
   });
 }

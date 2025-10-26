@@ -540,19 +540,6 @@ const recommendedAction = (
   };
 };
 
-interface InventoryVisualizationItem {
-  name: string;
-  current: number;
-  safe: number;
-  available: number;
-  oneWeekForecast: number;
-  eta: number;
-  overstockRateHistory: number[];
-  monthlyData: number[];
-  year: number;
-  dailyDemandHistory: number[];
-}
-
 type ForecastPeriodLabel =
   | '\uC77C\uC8FC \uD6C4'
   | '\uC774\uC8FC \uD6C4'
@@ -560,32 +547,7 @@ type ForecastPeriodLabel =
   | '\uC0BC\uB2EC \uD6C4'
   | '\uC721\uB2EC \uD6C4';
 
-const INVENTORY_VISUALIZATION_DATA: readonly InventoryVisualizationItem[] = [
-  {
-    name: '그린팜 오트 드링크',
-    current: 2960,
-    safe: 1128,
-    available: 2800,
-    oneWeekForecast: 2142,
-    eta: 30,
-    overstockRateHistory: [120, 140, 150, 162, 155, 148],
-    monthlyData: [800, 1000, 950, 1100, 1200, 960],
-    year: 2025,
-    dailyDemandHistory: [420, 440, 400, 415, 430, 450, 435],
-  },
-  {
-    name: '에너핏 단백질 드링크',
-    current: 460,
-    safe: 384,
-    available: 380,
-    oneWeekForecast: 156,
-    eta: 15,
-    overstockRateHistory: [22, 18, 25, 20, 24, 21],
-    monthlyData: [200, 250, 230, 210, 190, 175],
-    year: 2025,
-    dailyDemandHistory: [58, 65, 60, 59, 62, 64, 61],
-  },
-] as const;
+type MonthKey = number;
 
 const FORECAST_PERIOD_OPTIONS: Record<ForecastPeriodLabel, number> = {
   '\uC77C\uC8FC \uD6C4': 1,
@@ -595,26 +557,31 @@ const FORECAST_PERIOD_OPTIONS: Record<ForecastPeriodLabel, number> = {
   '\uC721\uB2EC \uD6C4': 24,
 };
 
-const calculateStdDev = (values: number[]): number => {
-  if (!Array.isArray(values) || values.length === 0) {
-    return 0;
-  }
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  const variance = values.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / values.length;
-  return Math.sqrt(variance);
-};
-
-const calculateDynamicSafetyStock = (serviceLevelZ: number, demandStd: number, leadTimeDays: number): number => {
-  if (serviceLevelZ <= 0 || demandStd <= 0 || leadTimeDays <= 0) {
-    return 0;
-  }
-  return serviceLevelZ * demandStd * Math.sqrt(leadTimeDays);
-};
-
 const MONTHLY_SHIPMENT_KEY = '\uCD9C\uACE0\uB7C9';
 const AVAILABLE_STOCK_KEY = '\uAC00\uC6A9\uC7AC\uACE0';
-const SAFETY_STOCK_KEY = '\uC548\uC804\uC7AC\uACE0';
+const SAFETY_STOCK_KEY = '안전재고';
 const OVERSTOCK_RATE_KEY = '\uCD08\uACFC\uC7AC\uACE0\uC728';
+
+const parseForecastDate = (value: string): Date | null => {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.includes('T') ? value : `${value}T00:00:00Z`;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date;
+};
+
+const toMonthStartKey = (date: Date): MonthKey =>
+  Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+
+const formatMonthLabelKo = (date: Date): string => {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  return `${year}\uB144 ${month}\uC6D4`;
+};
 
 interface InventoryScope {
   warehouseCode: string | null;
@@ -2382,6 +2349,8 @@ const DeepflowDashboard: React.FC = () => {
                   setSelected={setSelected}
                   kpis={kpis}
                   riskSummary={riskSummary}
+                  forecastCache={forecastCache}
+                  forecastStatusBySku={forecastStatusBySku}
                 />
               )}
 
@@ -2504,9 +2473,19 @@ interface InventoryPageProps {
   setSelected: (row: Product) => void;
   kpis: KpiSummary;
   riskSummary: RiskSummaryEntry[];
+  forecastCache: Record<string, ForecastResponse>;
+  forecastStatusBySku: Record<string, ForecastStateEntry>;
 }
 
-const InventoryPage: React.FC<InventoryPageProps> = ({ skus, selected, setSelected, kpis, riskSummary }) => {
+const InventoryPage: React.FC<InventoryPageProps> = ({
+  skus,
+  selected,
+  setSelected,
+  kpis,
+  riskSummary,
+  forecastCache,
+  forecastStatusBySku,
+}) => {
   const [search, setSearch] = useState('');
   const [riskFilter, setRiskFilter] = useState<'all' | InventoryRisk>('all');
   const [warehouses, setWarehouses] = useState<ApiWarehouse[]>([]);
@@ -2656,109 +2635,164 @@ const InventoryPage: React.FC<InventoryPageProps> = ({ skus, selected, setSelect
     return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   }, []);
 
-  const futureMonthLabels = useMemo(() => {
+  const futureMonths = useMemo(() => {
     const base = new Date();
+    const year = base.getUTCFullYear();
+    const month = base.getUTCMonth();
     return Array.from({ length: 6 }, (_, index) => {
-      const next = new Date(base.getFullYear(), base.getMonth() + index, 1);
-      return `${next.getFullYear()}\uB144 ${String(next.getMonth() + 1).padStart(2, '0')}\uC6D4`;
+      const point = new Date(Date.UTC(year, month + index, 1));
+      return { key: toMonthStartKey(point), label: formatMonthLabelKo(point) };
     });
   }, []);
 
-  const visualizationTarget = useMemo<InventoryVisualizationItem | null>(() => {
-    if (selected) {
-      const matched = INVENTORY_VISUALIZATION_DATA.find((entry) => entry.name === selected.name);
-      if (matched) {
-        return matched;
-      }
-    }
-    return INVENTORY_VISUALIZATION_DATA[0] ?? null;
-  }, [selected]);
+  const selectedSummary = selected ? inventorySummaries.get(selected.sku) : undefined;
+  const scopedSelected = selected
+    ? selectedSummary
+      ? { ...selected, onHand: selectedSummary.onHand, reserved: selectedSummary.reserved }
+      : selected
+    : null;
 
-  const chartYear = useMemo(() => visualizationTarget?.year ?? new Date().getFullYear(), [visualizationTarget]);
+  const selectedForecast = selected?.sku ? forecastCache[selected.sku] : undefined;
+  const selectedForecastStatus = selected?.sku ? forecastStatusBySku[selected.sku] : undefined;
 
-  const demandStdDev = useMemo(
-    () => calculateStdDev(visualizationTarget?.dailyDemandHistory ?? []),
-    [visualizationTarget],
-  );
+  const baseAvailable = scopedSelected ? availableStock(scopedSelected) : 0;
+  const avgDailyDemand = selectedForecast?.metrics?.avgDailyDemand ?? selected?.dailyAvg ?? 0;
 
   const safetyBenchmark = useMemo(() => {
-    if (!visualizationTarget) {
-      return 0;
+    const forecastSafety = selectedForecast?.product?.safetyStock;
+    if (typeof forecastSafety === 'number' && Number.isFinite(forecastSafety) && forecastSafety > 0) {
+      return forecastSafety;
     }
-    const dynamic = Math.round(calculateDynamicSafetyStock(1.65, demandStdDev, visualizationTarget.eta));
-    if (dynamic > 0) {
-      return dynamic;
+    if (selected) {
+      return safetyStock(selected);
     }
-    return Math.max(Math.round(visualizationTarget.safe), 0);
-  }, [demandStdDev, visualizationTarget]);
+    return 0;
+  }, [selected, selectedForecast]);
 
   const roundedSafetyBenchmark = useMemo(() => Math.max(Math.round(safetyBenchmark), 0), [safetyBenchmark]);
 
   const forecastWeeks = useMemo(() => FORECAST_PERIOD_OPTIONS[forecastPeriod] ?? 1, [forecastPeriod]);
 
-  const forecastedAvailable = useMemo(() => {
-    if (!visualizationTarget) {
-      return 0;
-    }
-    const deduction = visualizationTarget.oneWeekForecast * forecastWeeks;
-    return Math.max(visualizationTarget.available - deduction, 0);
-  }, [forecastWeeks, visualizationTarget]);
+  const weeklyDemand = useMemo(() => Math.max(Math.round(avgDailyDemand * 7), 0), [avgDailyDemand]);
+  const fallbackMonthlyDemand = useMemo(
+    () => Math.max(Math.round(avgDailyDemand * 30), 0),
+    [avgDailyDemand],
+  );
+
+  const forecastedAvailable = useMemo(
+    () => Math.max(baseAvailable - weeklyDemand * forecastWeeks, 0),
+    [baseAvailable, forecastWeeks, weeklyDemand],
+  );
 
   const monthlyShipmentSeries = useMemo(() => {
-    if (!visualizationTarget) {
+    if (!selectedForecast) {
       return [];
     }
-    return visualizationTarget.monthlyData.map((value, index) => ({
-      name: `${visualizationTarget.year}\uB144 ${String(index + 1).padStart(2, '0')}\uC6D4`,
-      [MONTHLY_SHIPMENT_KEY]: value,
-    }));
-  }, [visualizationTarget]);
+    const totals = new Map<MonthKey, number>();
+    selectedForecast.timeline.forEach((point) => {
+      if (point.phase !== 'history') {
+        return;
+      }
+      const parsed = parseForecastDate(point.date);
+      if (!parsed) {
+        return;
+      }
+      const key = toMonthStartKey(parsed);
+      const value = Math.max(point.actual ?? point.forecast ?? 0, 0);
+      totals.set(key, (totals.get(key) ?? 0) + value);
+    });
+    return Array.from(totals.entries())
+      .sort((a, b) => a[0] - b[0])
+      .slice(-6)
+      .map(([key, total]) => ({
+        name: formatMonthLabelKo(new Date(key)),
+        [MONTHLY_SHIPMENT_KEY]: Math.round(total),
+      }));
+  }, [selectedForecast]);
+
+  const monthlyForecastTotals = useMemo(() => {
+    const map = new Map<MonthKey, number>();
+    if (!selectedForecast) {
+      return map;
+    }
+    selectedForecast.timeline.forEach((point) => {
+      if (point.phase !== 'forecast') {
+        return;
+      }
+      const parsed = parseForecastDate(point.date);
+      if (!parsed) {
+        return;
+      }
+      const key = toMonthStartKey(parsed);
+      const value = Math.max(point.forecast, 0);
+      map.set(key, (map.get(key) ?? 0) + value);
+    });
+    return map;
+  }, [selectedForecast]);
 
   const futureForecastSeries = useMemo(() => {
-    if (!visualizationTarget) {
-      return futureMonthLabels.map((label) => ({
+    if (!scopedSelected) {
+      return futureMonths.map(({ label }) => ({
         name: label,
         [AVAILABLE_STOCK_KEY]: 0,
-        [SAFETY_STOCK_KEY]: 0,
+        [SAFETY_STOCK_KEY]: roundedSafetyBenchmark,
       }));
     }
-    return futureMonthLabels.map((label, index) => {
-      const deduction = visualizationTarget.oneWeekForecast * (index + 1);
+    let remaining = baseAvailable;
+    return futureMonths.map(({ key, label }) => {
+      const demand = monthlyForecastTotals.get(key) ?? fallbackMonthlyDemand;
+      remaining = Math.max(remaining - demand, 0);
       return {
         name: label,
-        [AVAILABLE_STOCK_KEY]: Math.max(visualizationTarget.available - deduction, 0),
+        [AVAILABLE_STOCK_KEY]: Math.round(remaining),
         [SAFETY_STOCK_KEY]: roundedSafetyBenchmark,
       };
     });
-  }, [futureMonthLabels, roundedSafetyBenchmark, visualizationTarget]);
+  }, [
+    baseAvailable,
+    fallbackMonthlyDemand,
+    futureMonths,
+    monthlyForecastTotals,
+    roundedSafetyBenchmark,
+    scopedSelected,
+  ]);
 
   const availableVsSafetySeries = useMemo(() => {
-    if (!visualizationTarget) {
+    if (!selected) {
       return [];
     }
     return [
       {
-        name: visualizationTarget.name,
+        name: selected.name,
         [AVAILABLE_STOCK_KEY]: forecastedAvailable,
         [SAFETY_STOCK_KEY]: roundedSafetyBenchmark,
       },
     ];
-  }, [forecastedAvailable, roundedSafetyBenchmark, visualizationTarget]);
+  }, [forecastedAvailable, roundedSafetyBenchmark, selected]);
 
   const overstockTrendSeries = useMemo(() => {
-    if (!visualizationTarget) {
-      return futureMonthLabels.map((label) => ({
+    if (futureForecastSeries.length === 0) {
+      return futureMonths.map(({ label }) => ({
         name: label,
         [OVERSTOCK_RATE_KEY]: 0,
       }));
     }
-    const history = visualizationTarget.overstockRateHistory;
-    const fallback = history.length > 0 ? history[history.length - 1] : 0;
-    return futureMonthLabels.map((label, index) => ({
-      name: label,
-      [OVERSTOCK_RATE_KEY]: history[index] ?? fallback,
-    }));
-  }, [futureMonthLabels, visualizationTarget]);
+    return futureForecastSeries.map((entry) => {
+      const safety = entry[SAFETY_STOCK_KEY];
+      const available = entry[AVAILABLE_STOCK_KEY];
+      const rate = safety > 0 ? Math.round(((available - safety) / safety) * 100) : 0;
+      return { name: entry.name, [OVERSTOCK_RATE_KEY]: rate };
+    });
+  }, [futureForecastSeries, futureMonths]);
+
+  const chartYear = useMemo(() => {
+    if (monthlyShipmentSeries.length === 0) {
+      return new Date().getFullYear();
+    }
+    const last = monthlyShipmentSeries[monthlyShipmentSeries.length - 1]?.name ?? '';
+    const match = last.match(/^(\d{4})/);
+    return match ? Number.parseInt(match[1], 10) : new Date().getFullYear();
+  }, [monthlyShipmentSeries]);
 
   const selectorClassName =
     'min-w-[160px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:bg-slate-50 disabled:text-slate-400';
@@ -3155,7 +3189,9 @@ const InventoryPage: React.FC<InventoryPageProps> = ({ skus, selected, setSelect
         <div className="h-64">
           {monthlyShipmentSeries.length === 0 ? (
             <div className="h-full flex items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 text-sm text-slate-500">
-              표시할 월별 출고 데이터가 없습니다.
+              {selectedForecastStatus?.status === 'loading'
+                ? '\uC6D4\uBCC4 \uCD9C\uACE0 \uB370\uC774\uD130\uB97C \uBD88\uB7EC\uC624\uB294 \uC911\uC785\uB2C8\uB2E4.'
+                : '\uD45C\uC2DC\uD560 \uC6D4\uBCC4 \uCD9C\uACE0 \uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.'}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -3194,7 +3230,7 @@ const InventoryPage: React.FC<InventoryPageProps> = ({ skus, selected, setSelect
                 strokeWidth={3}
                 strokeDasharray="6 3"
                 ifOverflow="extendDomain"
-                label={{ value: '\uC548\uC804\uC7AC\uACE0 \uAE30\uC900\uC120', position: 'insideTopLeft', fill: '#f87171', fontSize: 12 }}
+                label={{ value: '안전재고 \uAE30\uC900\uC120', position: 'insideTopLeft', fill: '#f87171', fontSize: 12 }}
               />
             </BarChart>
           </ResponsiveContainer>
@@ -3219,7 +3255,9 @@ const InventoryPage: React.FC<InventoryPageProps> = ({ skus, selected, setSelect
         <div className="h-56">
           {availableVsSafetySeries.length === 0 ? (
             <div className="h-full flex items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 text-sm text-slate-500">
-              가용 재고 데이터를 불러오는 중입니다.
+              {selectedForecastStatus?.status === 'loading'
+                ? '가용재고 \uB370\uC774\uD130\uB97C \uBD88\uB7EC\uC624\uB294 \uC911\uC785\uB2C8\uB2E4.'
+                : '\uD45C\uC2DC\uD560 가용재고 \uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.'}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -3228,8 +3266,8 @@ const InventoryPage: React.FC<InventoryPageProps> = ({ skus, selected, setSelect
                 <YAxis />
                 <Tooltip formatter={(value, name) => [`${Math.round(Number(value)).toLocaleString()}개`, name as string]} />
                 <Legend />
-                <Bar dataKey={AVAILABLE_STOCK_KEY} fill="#f97316" name="\uAC00\uC6A9 \uC7AC\uACE0" />
-                <Bar dataKey={SAFETY_STOCK_KEY} fill="#10b981" name="\uC548\uC804\uC7AC\uACE0" />
+                <Bar dataKey={AVAILABLE_STOCK_KEY} fill="#f97316" name="가용재고" />
+                <Bar dataKey={SAFETY_STOCK_KEY} fill="#10b981" name="안전재고" />
               </BarChart>
             </ResponsiveContainer>
           )}

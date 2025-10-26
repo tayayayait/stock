@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+﻿import { randomUUID } from 'node:crypto';
 
 export interface WarehousePayload {
   code: string;
@@ -45,7 +45,13 @@ function toRecord(payload: WarehousePayload): WarehouseRecord {
 }
 
 export function ensureWarehouseSeedData(): void {
-  if (!autoSeed || warehouseStore.size > 0) {
+  if (!autoSeed) {
+    return;
+  }
+
+  autoSeed = false;
+
+  if (warehouseStore.size > 0) {
     return;
   }
 
@@ -116,3 +122,8 @@ export function __resetWarehouseStore(seed = true): void {
 export function __getWarehouseRecords(): WarehouseRecord[] {
   return listWarehouses();
 }
+
+
+
+
+

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+﻿import { randomUUID } from 'node:crypto';
 
 import { ensureWarehouseSeedData, findWarehouseByCode } from './warehousesStore.js';
 import { deleteInventoryByLocation, renameInventoryLocation } from './inventoryStore.js';
@@ -54,7 +54,13 @@ function toRecord(payload: LocationPayload): LocationRecord {
 export function ensureLocationSeedData(): void {
   ensureWarehouseSeedData();
 
-  if (!autoSeed || locationStore.size > 0) {
+  if (!autoSeed) {
+    return;
+  }
+
+  autoSeed = false;
+
+  if (locationStore.size > 0) {
     return;
   }
 
@@ -64,6 +70,7 @@ export function ensureLocationSeedData(): void {
     }
   });
 }
+
 
 export function listLocations(): LocationRecord[] {
   ensureLocationSeedData();
@@ -181,3 +188,5 @@ export function __resetLocationStore(seed = true): void {
 export function __getLocationRecords(): LocationRecord[] {
   return listLocations();
 }
+
+

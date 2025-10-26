@@ -219,7 +219,6 @@ describe('DeepflowDashboard inventory filters', () => {
       tableQueries.getByText('D1E2F3G');
       expect(tableQueries.queryByText('H4I5J6K')).toBeNull();
       tableQueries.getByText('총출고량');
-      tableQueries.getByText('최근 7일 평균 98개');
     });
 
     fireEvent.change(warehouseSelect, { target: { value: '2' } });
@@ -251,4 +250,3 @@ describe('DeepflowDashboard inventory filters', () => {
     expect(emptyMessage).toBeTruthy();
   });
 });
-

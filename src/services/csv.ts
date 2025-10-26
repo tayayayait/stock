@@ -55,7 +55,9 @@ export async function fetchJob(jobId: string): Promise<CsvJobStatusResponse> {
 
 export async function downloadTemplate(type: CsvUploadType): Promise<Blob> {
   const response = await getRaw(`/csv/template?type=${type}`);
-  return await response.blob();
+  const text = await response.text();
+  const normalized = text.startsWith('\uFEFF') ? text.slice(1) : text;
+  return new Blob(['\uFEFF', normalized], { type: 'text/csv;charset=utf-8' });
 }
 
 export async function downloadJobErrors(jobId: string): Promise<Blob | null> {

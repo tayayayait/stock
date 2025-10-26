@@ -435,72 +435,7 @@ function ensureSeedData() {
   ensureWarehouseSeedData();
   ensureLocationSeedData();
 
-  const seedProducts: Array<Omit<ValidatedProductPayload, 'inventory'> & { inventory: InventoryEntry[] }> = [
-    {
-      productId: randomUUID(),
-      legacyProductId: ++productSequence,
-      sku: 'D1E2F3G',
-      imageUrl: undefined,
-      name: '그린팜 오트 드링크',
-      category: '식물성음료',
-      subCategory: '오트밀크',
-      brand: '그린팜',
-      unit: 'EA',
-      packCase: '8/12',
-      pack: 8,
-      casePack: 12,
-      abcGrade: 'A',
-      xyzGrade: 'Y',
-      bufferRatio: 0.22,
-      dailyAvg: 94,
-      dailyStd: 20,
-      totalInbound: 11840,
-      totalOutbound: 11200,
-      avgOutbound7d: 98,
-      isActive: true,
-      risk: '정상',
-      expiryDays: 120,
-      supplyPrice: null,
-      salePrice: null,
-      inventory: [
-        { warehouseCode: 'WH-SEOUL', locationCode: 'SEOUL-A1', onHand: 1240, reserved: 80 },
-        { warehouseCode: 'WH-SEOUL', locationCode: 'SEOUL-D2', onHand: 640, reserved: 40 },
-        { warehouseCode: 'WH-BUSAN', locationCode: 'BUSAN-B1', onHand: 520, reserved: 0 },
-        { warehouseCode: 'WH-SEOUL', locationCode: 'SEOUL-B1', onHand: 560, reserved: 40 },
-      ],
-    },
-    {
-      productId: randomUUID(),
-      legacyProductId: ++productSequence,
-      sku: 'H4I5J6K',
-      imageUrl: undefined,
-      name: '에너핏 단백질 드링크',
-      category: '건강음료',
-      subCategory: '단백질 음료',
-      brand: '에너핏',
-      unit: 'EA',
-      packCase: '6/18',
-      pack: 6,
-      casePack: 18,
-      abcGrade: 'A',
-      xyzGrade: 'Z',
-      bufferRatio: 0.35,
-      dailyAvg: 32,
-      dailyStd: 9,
-      totalInbound: 2680,
-      totalOutbound: 2410,
-      avgOutbound7d: 30,
-      isActive: true,
-      risk: '결품위험',
-      expiryDays: 45,
-      supplyPrice: null,
-      salePrice: null,
-      inventory: [
-        { warehouseCode: 'WH-SEOUL', locationCode: 'SEOUL-C1', onHand: 280, reserved: 60 },
-        { warehouseCode: 'WH-DAEJEON', locationCode: 'DAEJEON-A1', onHand: 180, reserved: 20 },
-      ],
-    },
-  ];
+  const seedProducts: Array<Omit<ValidatedProductPayload, 'inventory'> & { inventory: InventoryEntry[] }> = [];
 
   seedProducts.forEach((sample) => {
     const now = new Date().toISOString();

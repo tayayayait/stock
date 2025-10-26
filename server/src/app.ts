@@ -11,6 +11,7 @@ import warehousesRoutes from './routes/warehouses.js';
 import locationsRoutes from './routes/locations.js';
 import categoriesRoutes from './routes/categories.js';
 import productImagesRoutes from './routes/productImages.js';
+import inventoryDashboardRoutes from './routes/inventoryDashboard.js';
 import { ensureWarehouseSeedData } from './stores/warehousesStore.js';
 import { ensureLocationSeedData } from './stores/locationsStore.js';
 
@@ -33,6 +34,7 @@ export async function buildServer() {
   await server.register(productsRoutes, { prefix: '/api/products' });
   await server.register(csvRoutes, { prefix: '/api/csv' });
   await server.register(productImagesRoutes, { prefix: '/api/product-images' });
+  await server.register(inventoryDashboardRoutes, { prefix: '/api/inventory' });
 
   return server;
 }

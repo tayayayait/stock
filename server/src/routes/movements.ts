@@ -7,6 +7,12 @@ import {
   summarizeInventory,
   type InventoryRecord,
 } from '../stores/inventoryStore.js';
+import { findWarehouseByCode } from '../stores/warehousesStore.js';
+import { findLocationByCode } from '../stores/locationsStore.js';
+import {
+  recordMovementForAnalytics,
+  __resetMovementAnalytics,
+} from '../stores/movementAnalyticsStore.js';
 import { __adjustProductMovementTotals } from './products.js';
 
 type MovementType = 'RECEIPT' | 'ISSUE' | 'ADJUST' | 'TRANSFER';
@@ -26,7 +32,7 @@ type MovementPayload = {
   userId: string;
 };
 
-type MovementRecord = MovementPayload & {
+export type MovementRecord = MovementPayload & {
   id: string;
   createdAt: string;
   occurredAt: string;
@@ -159,6 +165,33 @@ function validatePayload(input: unknown): MovementPayload {
 
     if (type === 'ADJUST' && !toWarehouse) {
       errors.push('ADJUST 유형에서는 toWarehouse 필드가 필요합니다.');
+    }
+  }
+
+  if (!errors.length) {
+    if (fromWarehouse && !findWarehouseByCode(fromWarehouse)) {
+      errors.push(`존재하지 않는 출고 물류센터 코드입니다: ${fromWarehouse}`);
+    }
+    if (toWarehouse && !findWarehouseByCode(toWarehouse)) {
+      errors.push(`존재하지 않는 입고 물류센터 코드입니다: ${toWarehouse}`);
+    }
+
+    if (fromLocation) {
+      const location = findLocationByCode(fromLocation);
+      if (!location) {
+        errors.push(`알 수 없는 출고 로케이션 코드입니다: ${fromLocation}`);
+      } else if (fromWarehouse && location.warehouseCode !== fromWarehouse) {
+        errors.push('출고 로케이션이 지정된 물류센터에 속하지 않습니다.');
+      }
+    }
+
+    if (toLocation) {
+      const location = findLocationByCode(toLocation);
+      if (!location) {
+        errors.push(`알 수 없는 입고 로케이션 코드입니다: ${toLocation}`);
+      } else if (toWarehouse && location.warehouseCode !== toWarehouse) {
+        errors.push('입고 로케이션이 지정된 물류센터에 속하지 않습니다.');
+      }
     }
   }
 
@@ -391,6 +424,7 @@ export default async function movementRoutes(fastify: FastifyInstance) {
     }
 
     movementStore.push(movement);
+    recordMovementForAnalytics(movement);
 
     const inventory = syncInventoryStore(movement, affectedBalances);
     const { inbound, outbound } = getMovementTotalsDelta(movement);
@@ -465,4 +499,5 @@ export default async function movementRoutes(fastify: FastifyInstance) {
 export function __resetMovementStore() {
   movementStore.splice(0, movementStore.length);
   inventoryBalances.clear();
+  __resetMovementAnalytics();
 }

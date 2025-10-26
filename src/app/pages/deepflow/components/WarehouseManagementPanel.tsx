@@ -1,9 +1,10 @@
-import React, { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+﻿import React, { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   createLocation,
   createWarehouse,
   deleteWarehouse,
+  deleteLocation,
   fetchLocations,
   fetchWarehouses,
   type ApiLocation,
@@ -83,6 +84,9 @@ const WarehouseManagementPanel: React.FC<WarehouseManagementPanelProps> = ({ ref
   const [locationsError, setLocationsError] = useState<string | null>(null);
 
   const [locationRefreshToken, setLocationRefreshToken] = useState(0);
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
+  const [confirmTargetRow, setConfirmTargetRow] = useState<WarehouseLocationRow | null>(null);
+  const [confirmSubmitting, setConfirmSubmitting] = useState(false);
 
   const loadWarehouses = useCallback(async (query: string) => {
     setWarehousesLoading(true);
@@ -423,33 +427,63 @@ const WarehouseManagementPanel: React.FC<WarehouseManagementPanelProps> = ({ ref
     [editForm, editSubmitting, editTargetRow, loadWarehouses, onRequestReload, searchQuery],
   );
 
-  const handleDeleteRow = useCallback(
-    async (row: WarehouseLocationRow) => {
-      const locations = locationsByWarehouse[row.warehouse.code] ?? [];
-      const relatedLocationCount = row.location ? Math.max(locations.length, 1) : locations.length;
-      const confirmMessage = `선택한 창고를 삭제하시겠습니까? 연결된 상세위치도 함께 삭제됩니다.${
-        relatedLocationCount > 0 ? ` (총 ${relatedLocationCount}개)` : ''
-      }`;
+  const handleDeleteRow = useCallback((row: WarehouseLocationRow) => {
+    setConfirmTargetRow(row);
+    setConfirmDialogOpen(true);
+  }, []);
 
-      if (!window.confirm(confirmMessage)) {
-        return;
+  const handleCloseConfirmDialog = useCallback(() => {
+    if (confirmSubmitting) {
+      return;
+    }
+    setConfirmDialogOpen(false);
+    setConfirmTargetRow(null);
+  }, [confirmSubmitting]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!confirmTargetRow) {
+      return;
+    }
+
+    const row = confirmTargetRow;
+    const locations = locationsByWarehouse[row.warehouse.code] ?? [];
+    const isLocationRow = Boolean(row.location);
+    const isLastLocation = isLocationRow && locations.length <= 1;
+
+    try {
+      setWarehousesError(null);
+      setLocationsError(null);
+      setConfirmSubmitting(true);
+
+      if (isLocationRow && row.location) {
+        await deleteLocation(row.location.code);
+        if (isLastLocation) {
+          await deleteWarehouse(row.warehouse.code);
+        }
+      } else {
+        await deleteWarehouse(row.warehouse.code);
       }
 
-      try {
-        setWarehousesError(null);
-        setLocationsError(null);
-        await deleteWarehouse(row.warehouse.code);
-        setLocationRefreshToken((value) => value + 1);
-        await loadWarehouses(searchQuery);
-        onRequestReload();
-      } catch (error) {
-        const message =
-          error instanceof Error && error.message ? error.message : '창고를 삭제하지 못했습니다.';
+      setConfirmDialogOpen(false);
+      setConfirmTargetRow(null);
+      setLocationRefreshToken((value) => value + 1);
+      await loadWarehouses(searchQuery);
+      onRequestReload();
+    } catch (error) {
+      const fallbackMessage = isLocationRow
+        ? 'Failed to delete location.'
+        : 'Failed to delete warehouse.';
+      const message = error instanceof Error && error.message ? error.message : fallbackMessage;
+
+      if (isLocationRow) {
+        setLocationsError(message);
+      } else {
         setWarehousesError(message);
       }
-    },
-    [loadWarehouses, locationsByWarehouse, onRequestReload, searchQuery],
-  );
+    } finally {
+      setConfirmSubmitting(false);
+    }
+  }, [confirmTargetRow, locationsByWarehouse, loadWarehouses, onRequestReload, searchQuery]);
 
   const nameError = !createForm.name.trim() && createFormTouched.name ? '창고 이름을 입력해 주세요.' : null;
   const canSubmitCreateForm = createForm.name.trim() !== '' && !createSubmitting;
@@ -573,7 +607,6 @@ const WarehouseManagementPanel: React.FC<WarehouseManagementPanelProps> = ({ ref
                       <tr key={row.id}>
                         <td className="px-4 py-3 align-top">
                           <div className="font-medium text-slate-700">{row.warehouse.name}</div>
-                          <div className="text-xs uppercase tracking-wide text-slate-400">{row.warehouse.code}</div>
                         </td>
                         <td className="px-4 py-3 align-top">
                           {row.location ? (
@@ -619,6 +652,73 @@ const WarehouseManagementPanel: React.FC<WarehouseManagementPanelProps> = ({ ref
         </section>
 
       </div>
+
+      {confirmDialogOpen && confirmTargetRow && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <h2 className="text-lg font-semibold text-slate-800">Delete confirmation</h2>
+              <button
+                type="button"
+                onClick={handleCloseConfirmDialog}
+                className="rounded-full border border-slate-200 px-3 py-1 text-sm text-slate-500 transition hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={confirmSubmitting}
+              >
+                Close
+              </button>
+            </div>
+            <div className="space-y-4 px-5 py-6 text-sm text-slate-700">
+              {(() => {
+                const row = confirmTargetRow;
+                const locations = locationsByWarehouse[row.warehouse.code] ?? [];
+                const isLocationRow = Boolean(row.location);
+                const isLastLocation = isLocationRow && locations.length <= 1;
+
+                if (isLocationRow) {
+                  return (
+                    <>
+                      <p>
+                        Delete location <span className="font-mono font-semibold">{row.location?.code}</span>{' '}
+                        in <span className="font-semibold">{row.warehouse.name}</span>?
+                      </p>
+                      {isLastLocation && (
+                        <p className="text-sm text-rose-600">
+                          This is the last location for this warehouse. The warehouse will be removed as well.
+                        </p>
+                      )}
+                    </>
+                  );
+                }
+
+                return (
+                  <p>
+                    Delete warehouse <span className="font-semibold">{row.warehouse.name}</span>
+                    {locations.length > 0 ? ` and its ${locations.length} location(s)` : ''}?
+                  </p>
+                );
+              })()}
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={handleCloseConfirmDialog}
+                  className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={confirmSubmitting}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDelete}
+                  className="rounded-md bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-rose-300"
+                  disabled={confirmSubmitting}
+                >
+                  {confirmSubmitting ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {editDialogOpen && editTargetRow && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40">
@@ -776,3 +876,13 @@ const WarehouseManagementPanel: React.FC<WarehouseManagementPanelProps> = ({ ref
 };
 
 export default WarehouseManagementPanel;
+
+
+
+
+
+
+
+
+
+

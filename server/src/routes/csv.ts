@@ -81,6 +81,75 @@ interface CsvTemplateConfig {
   rows: string[][];
 }
 
+type ProductResponse = ReturnType<typeof __getProductRecords>[number];
+
+const CSV_HEADER_CONFIG: Record<CsvUploadType, { required: string[]; optional: string[] }> = {
+  products: {
+    required: ['sku', 'name', 'category', 'abcGrade', 'xyzGrade', 'dailyAvg', 'dailyStd'],
+    optional: [
+      'subCategory',
+      'brand',
+      'unit',
+      'packCase',
+      'bufferRatio',
+      'isActive',
+      'onHand',
+      'reserved',
+      'risk',
+      'expiryDays',
+    ],
+  },
+  initial_stock: {
+    required: ['sku', 'warehouse', 'location', 'onHand'],
+    optional: ['reserved'],
+  },
+  movements: {
+    required: ['sku', 'warehouse', 'location', 'partner', 'type', 'quantity'],
+    optional: ['reference', 'occurredAt'],
+  },
+};
+
+const TEMPLATE_ROW_LIMIT = 5;
+
+const DEFAULT_PRODUCT_TEMPLATE_SAMPLE: Record<string, string> = {
+  sku: 'SAMPLE-SKU-001',
+  name: 'Sample Product',
+  category: 'Processed Food',
+  subCategory: 'Instant Meal',
+  brand: 'StockConsole',
+  unit: 'EA',
+  packCase: '4/12',
+  abcGrade: 'B',
+  xyzGrade: 'Y',
+  bufferRatio: '0.20',
+  dailyAvg: '24',
+  dailyStd: '6',
+  isActive: 'true',
+  onHand: '480',
+  reserved: '30',
+  risk: '정상',
+  expiryDays: '90',
+};
+
+const DEFAULT_INITIAL_STOCK_SAMPLE: Record<string, string> = {
+  sku: 'SAMPLE-SKU-001',
+  warehouse: 'ICN1',
+  location: 'A-01',
+  onHand: '480',
+  reserved: '30',
+};
+
+const DEFAULT_MOVEMENT_TEMPLATE_SAMPLE: Record<string, string> = {
+  sku: 'SAMPLE-SKU-001',
+  warehouse: 'ICN1',
+  location: 'A-01',
+  partner: 'SUP-0001',
+  type: 'INBOUND',
+  quantity: '120',
+  reference: 'ORDER-REF-2401',
+  occurredAt: new Date().toISOString().slice(0, 10),
+};
+
 const previewCache = new Map<string, PreviewCacheEntry>();
 const jobStore = new Map<string, CsvJob>();
 const jobQueue: CsvJob[] = [];
@@ -185,7 +254,8 @@ function escapeCsv(value: string): string {
 function stringifyCsv(headers: string[], rows: string[][]): string {
   const headerLine = headers.map((header) => escapeCsv(header)).join(',');
   const body = rows.map((row) => row.map((cell) => escapeCsv(cell ?? '')).join(',')).join('\n');
-  return body ? `${headerLine}\n${body}` : headerLine;
+  const content = body ? `${headerLine}\n${body}` : headerLine;
+  return `\uFEFF${content}`;
 }
 
 function requireCsvType(type: string | undefined): CsvUploadType {
@@ -225,36 +295,14 @@ function parseBoolean(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-function validateHeaders(type: CsvUploadType, headers: string[]): string[] {
-  const headerSets: Record<CsvUploadType, { required: string[]; optional: string[] }> = {
-    products: {
-      required: ['sku', 'name', 'category', 'abcGrade', 'xyzGrade', 'dailyAvg', 'dailyStd'],
-      optional: [
-        'subCategory',
-        'brand',
-        'unit',
-        'packCase',
-        'bufferRatio',
-        'isActive',
-        'onHand',
-        'reserved',
-        'risk',
-        'expiryDays',
-      ],
-    },
-    initial_stock: {
-      required: ['sku', 'warehouse', 'location', 'onHand'],
-      optional: ['reserved'],
-    },
-    movements: {
-      required: ['sku', 'warehouse', 'location', 'partner', 'type', 'quantity'],
-      optional: ['reference', 'occurredAt'],
-    },
-  };
+function getCsvHeaders(type: CsvUploadType): string[] {
+  const config = CSV_HEADER_CONFIG[type];
+  return [...config.required, ...config.optional];
+}
 
-  const config = headerSets[type];
-  const missing = config.required.filter((header) => !headers.includes(header));
-  return missing;
+function validateHeaders(type: CsvUploadType, headers: string[]): string[] {
+  const required = CSV_HEADER_CONFIG[type].required;
+  return required.filter((header) => !headers.includes(header));
 }
 
 function parseProductRow(raw: Record<string, string>, lineNumber: number): ParsedRow {
@@ -596,61 +644,78 @@ function applyRow(type: CsvUploadType, row: ParsedRow) {
   }
 }
 
-function buildTemplate(type: CsvUploadType): CsvTemplateConfig {
-  const configs: Record<CsvUploadType, CsvTemplateConfig> = {
-    products: {
-      headers: [
-        'sku',
-        'name',
-        'category',
-        'subCategory',
-        'brand',
-        'unit',
-        'packCase',
-        'abcGrade',
-        'xyzGrade',
-        'bufferRatio',
-        'dailyAvg',
-        'dailyStd',
-        'isActive',
-        'onHand',
-        'reserved',
-        'risk',
-        'expiryDays',
-      ],
-      rows: [
-        [
-          'CSV-EXIST-001',
-          'CSV 업데이트 상품',
-          '간편식품',
-          '즉석식',
-          '마켓컬리',
-          'EA',
-          '4/12',
-          'B',
-          'Y',
-          '0.25',
-          '24',
-          '6',
-          'true',
-          '480',
-          '30',
-          '정상',
-          '90',
-        ],
-      ],
-    },
-    initial_stock: {
-      headers: ['sku', 'warehouse', 'location', 'onHand', 'reserved'],
-      rows: [['CSV-EXIST-001', 'ICN1', 'B-01', '480', '30']],
-    },
-    movements: {
-      headers: ['sku', 'warehouse', 'location', 'partner', 'type', 'quantity', 'reference', 'occurredAt'],
-      rows: [['CSV-EXIST-001', 'ICN1', 'B-01', 'SUP-0001', 'INBOUND', '120', '입고오더-2401', new Date().toISOString().slice(0, 10)]],
-    },
-  };
+function formatProductTemplateValue(record: ProductResponse, column: string): string {
+  switch (column) {
+    case 'sku':
+      return record.sku;
+    case 'name':
+      return record.name;
+    case 'category':
+      return record.category;
+    case 'subCategory':
+      return record.subCategory ?? '';
+    case 'brand':
+      return record.brand ?? '';
+    case 'unit':
+      return record.unit;
+    case 'packCase':
+      return record.packCase;
+    case 'abcGrade':
+      return record.abcGrade;
+    case 'xyzGrade':
+      return record.xyzGrade;
+    case 'bufferRatio':
+      return Number.isFinite(record.bufferRatio) ? record.bufferRatio.toString() : '';
+    case 'dailyAvg':
+      return Number.isFinite(record.dailyAvg) ? record.dailyAvg.toString() : '';
+    case 'dailyStd':
+      return Number.isFinite(record.dailyStd) ? record.dailyStd.toString() : '';
+    case 'isActive':
+      return record.isActive ? 'true' : 'false';
+    case 'onHand':
+      return Number.isFinite(record.onHand) ? record.onHand.toString() : '';
+    case 'reserved':
+      return Number.isFinite(record.reserved) ? record.reserved.toString() : '';
+    case 'risk':
+      return record.risk;
+    case 'expiryDays': {
+      const { expiryDays } = record;
+      return expiryDays === null || expiryDays === undefined ? '' : expiryDays.toString();
+    }
+    default:
+      return '';
+  }
+}
 
-  return configs[type];
+function buildProductTemplate(): CsvTemplateConfig {
+  const headers = getCsvHeaders('products');
+  const products = __getProductRecords().slice(0, TEMPLATE_ROW_LIMIT);
+  const rows: string[][] =
+    products.length > 0
+      ? products.map((record) => headers.map((column) => formatProductTemplateValue(record, column)))
+      : [headers.map((column) => DEFAULT_PRODUCT_TEMPLATE_SAMPLE[column] ?? '')];
+
+  rows.push(headers.map(() => ''));
+  return { headers, rows };
+}
+
+function buildTemplate(type: CsvUploadType): CsvTemplateConfig {
+  switch (type) {
+    case 'products':
+      return buildProductTemplate();
+    case 'initial_stock': {
+      const headers = getCsvHeaders('initial_stock');
+      const row = headers.map((column) => DEFAULT_INITIAL_STOCK_SAMPLE[column] ?? '');
+      return { headers, rows: [row] };
+    }
+    case 'movements': {
+      const headers = getCsvHeaders('movements');
+      const row = headers.map((column) => DEFAULT_MOVEMENT_TEMPLATE_SAMPLE[column] ?? '');
+      return { headers, rows: [row] };
+    }
+    default:
+      return { headers: [], rows: [] };
+  }
 }
 
 function buildErrorCsv(job: CsvJob): string {

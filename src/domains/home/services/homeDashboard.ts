@@ -1,4 +1,10 @@
 import { formatQty } from '../../../../utils/format';
+import {
+  fetchInventoryDashboard,
+  type InventoryDashboardMovementPoint,
+  type InventoryDashboardResponse,
+  type InventoryDashboardShortage,
+} from '../../../services/inventoryDashboard';
 
 export type InventoryRiskLevel = 'critical' | 'high' | 'medium' | 'stable';
 
@@ -62,203 +68,102 @@ export interface HomeDashboardData {
   updatedAt: string;
 }
 
-const createRiskRecords = (): RiskSku[] => {
-  const seed: RiskSku[] = [
-    {
-      id: 'risk-1',
-      sku: 'SKU-COFFEE-001',
-      name: '콜드브루 베이스 1L',
-      category: '음료/액상',
-      location: 'ICN-A1-01',
-      daysOfCover: 2.3,
-      shortageQty: 320,
-      riskLevel: 'critical',
-      fillRate: 0.54,
-      trend: [92, 88, 84, 72, 61, 49, 36],
-    },
-    {
-      id: 'risk-2',
-      sku: 'SKU-DAIRY-014',
-      name: '무지방 우유 900ml',
-      category: '냉장/유제품',
-      location: 'ICN-C2-04',
-      daysOfCover: 1.8,
-      shortageQty: 210,
-      riskLevel: 'critical',
-      fillRate: 0.47,
-      trend: [84, 81, 76, 65, 53, 41, 28],
-    },
-    {
-      id: 'risk-3',
-      sku: 'SKU-SNACK-321',
-      name: '통밀 그래놀라 700g',
-      category: '건식/시리얼',
-      location: 'OSN-B1-11',
-      daysOfCover: 3.1,
-      shortageQty: 170,
-      riskLevel: 'high',
-      fillRate: 0.63,
-      trend: [78, 74, 69, 63, 59, 54, 48],
-    },
-    {
-      id: 'risk-4',
-      sku: 'SKU-READY-205',
-      name: '밀키트 크림파스타 2인분',
-      category: '즉석/간편식',
-      location: 'GMP-D4-03',
-      daysOfCover: 2.6,
-      shortageQty: 145,
-      riskLevel: 'high',
-      fillRate: 0.61,
-      trend: [74, 73, 70, 68, 61, 55, 47],
-    },
-    {
-      id: 'risk-5',
-      sku: 'SKU-FRESH-909',
-      name: '친환경 방울토마토 1kg',
-      category: '신선/농산',
-      location: 'ICN-E3-07',
-      daysOfCover: 1.3,
-      shortageQty: 260,
-      riskLevel: 'critical',
-      fillRate: 0.41,
-      trend: [88, 85, 80, 69, 57, 43, 32],
-    },
-    {
-      id: 'risk-6',
-      sku: 'SKU-BAKERY-112',
-      name: '천연발효 식빵 3입',
-      category: '베이커리',
-      location: 'ICN-B3-02',
-      daysOfCover: 2.9,
-      shortageQty: 120,
-      riskLevel: 'high',
-      fillRate: 0.66,
-      trend: [72, 71, 69, 62, 58, 52, 46],
-    },
-    {
-      id: 'risk-7',
-      sku: 'SKU-BEV-451',
-      name: '스파클링 워터 라임 355ml',
-      category: '음료/탄산',
-      location: 'PUS-A4-12',
-      daysOfCover: 4.2,
-      shortageQty: 90,
-      riskLevel: 'medium',
-      fillRate: 0.72,
-      trend: [69, 68, 66, 64, 60, 57, 55],
-    },
-    {
-      id: 'risk-8',
-      sku: 'SKU-HMR-082',
-      name: '냉동 한입 만두 1kg',
-      category: '냉동/간편식',
-      location: 'ICN-F1-09',
-      daysOfCover: 3.6,
-      shortageQty: 110,
-      riskLevel: 'medium',
-      fillRate: 0.75,
-      trend: [71, 70, 69, 66, 64, 61, 59],
-    },
-    {
-      id: 'risk-9',
-      sku: 'SKU-HEALTH-301',
-      name: '비타민C 츄어블 120정',
-      category: '헬스/보충제',
-      location: 'GMP-A2-05',
-      daysOfCover: 5.1,
-      shortageQty: 80,
-      riskLevel: 'medium',
-      fillRate: 0.78,
-      trend: [66, 65, 64, 62, 61, 58, 56],
-    },
-    {
-      id: 'risk-10',
-      sku: 'SKU-SAUCE-214',
-      name: '저염 간장 500ml',
-      category: '소스/조미료',
-      location: 'ICN-G3-03',
-      daysOfCover: 4.5,
-      shortageQty: 72,
-      riskLevel: 'medium',
-      fillRate: 0.79,
-      trend: [64, 63, 63, 61, 60, 58, 57],
-    },
-  ];
+type RiskLabel = '정상' | '결품위험' | '과잉';
 
-  const expansion = seed.map((item, index) => {
-    const id = index + 11;
-    return {
-      ...item,
-      id: `risk-${id}`,
-      sku: `${item.sku}-B`,
-      name: `${item.name} (주문형)`,
-      location: item.location.replace(/[0-9]+$/, (value) => `${Number(value) + 1}`),
-      daysOfCover: Number((item.daysOfCover + 0.6).toFixed(1)),
-      shortageQty: Math.max(45, Math.round(item.shortageQty * 0.68)),
-      riskLevel: index < 3 ? 'high' : index < 6 ? 'medium' : 'stable',
-      fillRate: Math.max(0.58, Number((item.fillRate + 0.07).toFixed(2))),
-      trend: item.trend.map((value, idx) => Math.max(38, value - idx * 2)),
-    } satisfies RiskSku;
-  });
+const PLACEHOLDER_TEXT = '\u2014';
 
-  const buffer: RiskSku[] = [
-    {
-      id: 'risk-18',
-      sku: 'SKU-FRESH-801',
-      name: '유기농 샐러드 믹스 300g',
-      category: '신선/채소',
-      location: 'ICN-E2-02',
-      daysOfCover: 1.9,
-      shortageQty: 188,
-      riskLevel: 'critical',
-      fillRate: 0.52,
-      trend: [86, 83, 78, 66, 55, 44, 31],
-    },
-    {
-      id: 'risk-19',
-      sku: 'SKU-GRAIN-612',
-      name: '프리미엄 현미 10kg',
-      category: '건식/곡물',
-      location: 'OSN-D2-08',
-      daysOfCover: 3.4,
-      shortageQty: 134,
-      riskLevel: 'high',
-      fillRate: 0.69,
-      trend: [75, 74, 72, 68, 63, 57, 51],
-    },
-    {
-      id: 'risk-20',
-      sku: 'SKU-SEAFOOD-432',
-      name: '냉장 연어 필렛 1.2kg',
-      category: '신선/수산',
-      location: 'PUS-F3-01',
-      daysOfCover: 2.1,
-      shortageQty: 205,
-      riskLevel: 'critical',
-      fillRate: 0.46,
-      trend: [89, 87, 81, 70, 59, 46, 33],
-    },
-  ];
+const clamp = (value: number, min = 0, max = Number.POSITIVE_INFINITY) => Math.min(max, Math.max(min, value));
 
-  return [...seed, ...expansion.slice(0, 7), ...buffer];
+const toFinite = (value: unknown, fallback = 0): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-const createMovementHistory = (): MovementSummaryItem[] => {
-  const today = new Date();
-  return Array.from({ length: 7 }).map((_, index) => {
-    const date = new Date(today);
-    date.setDate(today.getDate() - (6 - index));
-    const inbound = 1800 + Math.round(Math.sin(index) * 240 + index * 32);
-    const outbound = 1600 + Math.round(Math.cos(index / 1.3) * 210 + index * 24);
-
-    return {
-      date: date.toISOString(),
-      inbound,
-      outbound,
-    } satisfies MovementSummaryItem;
-  });
+const coalesceLocation = (value?: string | null): string => {
+  if (typeof value !== 'string') {
+    return PLACEHOLDER_TEXT;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : PLACEHOLDER_TEXT;
 };
+
+const ensureTrend = (input: number[] | undefined, available: number): number[] => {
+  if (Array.isArray(input) && input.length > 0) {
+    return input.map((value) => toFinite(value));
+  }
+  const baseline = Math.max(0, Math.round(toFinite(available)));
+  return [baseline, baseline];
+};
+
+const toRiskLevel = (
+  entry: InventoryDashboardShortage,
+  shortageQty: number,
+  safetyStock: number,
+): InventoryRiskLevel => {
+  if (entry.risk === '결품위험') {
+    const ratio = safetyStock > 0 ? shortageQty / safetyStock : shortageQty > 0 ? 1 : 0;
+    return ratio >= 0.5 ? 'critical' : 'high';
+  }
+  if (entry.risk === '과잉') {
+    return 'medium';
+  }
+  return 'stable';
+};
+
+const mapShortagesToRiskSku = (shortages: InventoryDashboardShortage[]): RiskSku[] =>
+  shortages
+    .filter((entry) => entry && typeof entry.sku === 'string' && entry.sku.trim())
+    .map((entry, index) => {
+      const shortageQty = toFinite(entry.shortageQty);
+      const available = toFinite(entry.available);
+      const safetyStock = toFinite(entry.safetyStock);
+      const daysOfCover = Number.isFinite(entry.daysOfCover) ? toFinite(entry.daysOfCover) : safetyStock > 0 ? available / safetyStock : 0;
+      const fillRate = Number.isFinite(entry.fillRate) ? clamp(toFinite(entry.fillRate), 0, 1) : safetyStock > 0 ? clamp(available / safetyStock, 0, 1) : available > 0 ? 1 : 0;
+
+      return {
+        id: `${entry.sku}-${index}`,
+        sku: entry.sku,
+        name: entry.name ?? entry.sku,
+        category: entry.category ?? PLACEHOLDER_TEXT,
+        location: coalesceLocation(entry.primaryLocation),
+        daysOfCover,
+        shortageQty,
+        riskLevel: toRiskLevel(entry, shortageQty, safetyStock),
+        fillRate,
+        trend: ensureTrend(entry.trend, available),
+      };
+    });
+
+const normalizeMovementHistory = (history: InventoryDashboardMovementPoint[] = []): MovementSummaryItem[] =>
+  history
+    .filter((entry) => typeof entry?.date === 'string')
+    .map((entry) => ({
+      date: entry.date,
+      inbound: toFinite(entry.inbound),
+      outbound: toFinite(entry.outbound),
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+const calculateMovementTotals = (history: MovementSummaryItem[]): HomeDashboardData['movementTotals'] => {
+  const totals = history.reduce(
+    (acc, current) => {
+      acc.inbound += current.inbound;
+      acc.outbound += current.outbound;
+      return acc;
+    },
+    { inbound: 0, outbound: 0 },
+  );
+  return {
+    inbound: totals.inbound,
+    outbound: totals.outbound,
+    net: totals.inbound - totals.outbound,
+  };
+};
+
+const normalizeShortageRate = (value: number | undefined): number => clamp(toFinite(value) / 100, 0, 1);
 
 const startOfWeek = (input: Date): Date => {
   const base = new Date(input);
@@ -289,7 +194,7 @@ const createWeeklySchedule = (): ScheduleDay[] => {
         },
         {
           id: 'evt-vendor-sync',
-          title: '주요 공급사 협의',
+          title: '주요 공급사 미팅',
           time: '15:00',
           owner: '조달팀',
           type: 'meeting',
@@ -323,9 +228,9 @@ const createWeeklySchedule = (): ScheduleDay[] => {
         },
         {
           id: 'evt-regional-meeting',
-          title: '지역 매장 수요 점검',
+          title: '지역매장 수요 회의',
           time: '16:00',
-          owner: '영업지원팀',
+          owner: '영업지원실',
           type: 'meeting',
           path: '/sales/regions/meetings?region=south',
         },
@@ -336,7 +241,7 @@ const createWeeklySchedule = (): ScheduleDay[] => {
       events: [
         {
           id: 'evt-inventory-audit',
-          title: '월간 재고 실사',
+          title: '주간 재고 감사',
           time: '10:00',
           owner: '품질관리팀',
           type: 'review',
@@ -357,7 +262,7 @@ const createWeeklySchedule = (): ScheduleDay[] => {
         },
         {
           id: 'evt-weekly-report',
-          title: '주간 성과 공유',
+          title: '주간 실적 공유',
           time: '17:00',
           owner: '경영기획팀',
           type: 'meeting',
@@ -372,7 +277,7 @@ const createWeeklySchedule = (): ScheduleDay[] => {
           id: 'evt-demand-refresh',
           title: '수요 모델 재학습',
           time: '11:00',
-          owner: '데이터팀',
+          owner: '데이터랩',
           type: 'review',
           path: '/planning/demand?view=modeling',
         },
@@ -397,7 +302,7 @@ const createWeeklySchedule = (): ScheduleDay[] => {
       isoDate,
       isToday,
       events,
-    } satisfies ScheduleDay;
+    };
   });
 };
 
@@ -413,52 +318,32 @@ const createDemandForecast = (): DemandForecastPoint[] => {
       label,
       forecast,
       actual,
-    } satisfies DemandForecastPoint;
+    };
   });
 };
 
 export async function fetchHomeDashboardData(): Promise<HomeDashboardData> {
-  const riskTop20 = createRiskRecords();
-  const movementHistory = createMovementHistory();
   const weeklySchedule = createWeeklySchedule();
   const demandForecast = createDemandForecast();
+  const inventory: InventoryDashboardResponse = await fetchInventoryDashboard();
 
-  const totalSkuCount = 428;
-  const shortageSkuCount = riskTop20.filter((item) => item.riskLevel === 'critical' || item.riskLevel === 'high').length;
-  const shortageRate = shortageSkuCount / totalSkuCount;
+  const movementHistory = normalizeMovementHistory(inventory.movementHistory ?? []);
+  const movementTotals = calculateMovementTotals(movementHistory);
+  const riskTop20 = mapShortagesToRiskSku(inventory.insights?.shortages ?? []).slice(0, 20);
 
-  const movementTotals = movementHistory.reduce(
-    (acc, current) => {
-      acc.inbound += current.inbound;
-      acc.outbound += current.outbound;
-      return acc;
-    },
-    { inbound: 0, outbound: 0, net: 0 },
-  );
-  movementTotals.net = movementTotals.inbound - movementTotals.outbound;
-
-  return new Promise((resolve) => {
-    const callback = () =>
-      resolve({
-        totalSkuCount,
-        shortageSkuCount,
-        shortageRate,
-        movementTotals,
-        movementHistory,
-        riskTop20,
-        weeklySchedule,
-        demandForecast,
-        updatedAt: new Date().toISOString(),
-      });
-
-    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(callback);
-      return;
-    }
-
-    setTimeout(callback, 0);
-  });
+  return {
+    totalSkuCount: toFinite(inventory.summary?.skuCount),
+    shortageSkuCount: toFinite(inventory.summary?.shortageSkuCount),
+    shortageRate: normalizeShortageRate(inventory.summary?.shortageRate),
+    movementTotals,
+    movementHistory,
+    riskTop20,
+    weeklySchedule,
+    demandForecast,
+    updatedAt: inventory.generatedAt ?? new Date().toISOString(),
+  };
 }
 
-export const formatMovementRange = (value: number): string => `${formatQty(value, { maximumFractionDigits: 0 })} EA`;
+export const formatMovementRange = (value: number): string =>
+  `${formatQty(value, { maximumFractionDigits: 0 })} EA`;
 
