@@ -9,6 +9,10 @@ export interface PolicyRecommendationPatch {
   casePack?: number;
   includeLTVar?: boolean;
   sigmaL?: number;
+  forecastDemand?: number;
+  demandStdDev?: number;
+  leadTimeDays?: number;
+  serviceLevelPercent?: number;
 }
 
 export interface PolicyRecommendationPayload {
@@ -20,8 +24,6 @@ export interface PolicyRecommendationPayload {
     xyz?: string;
     avgDaily?: number;
     onHand?: number;
-    risk?: string;
-    expiryDays?: number;
     pack?: number;
     casePack?: number;
   };

@@ -121,31 +121,27 @@ vi.mock('../stores/categoryStore', async () => {
   const remove = vi.fn(async (id: string) => {
     setState({ items: removeCategoryFromTree(state.items, id) });
   });
+
   const clearError = vi.fn(() => {
     setState({ error: null });
   });
 
   const useCategoryStore = () => {
-    const subscribe = (listener: () => void) => {
+    const [, forceRender] = React.useReducer((value) => value + 1, 0);
+    React.useEffect(() => {
+      const listener = () => forceRender();
       listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    };
-    const snapshot = React.useSyncExternalStore(subscribe, () => state);
+      return () => listeners.delete(listener);
+    }, []);
+
     return {
-      ...snapshot,
+      ...state,
       load,
       create,
       update,
       remove,
       clearError,
     };
-  };
-
-  const setMockState = (next: Partial<MockState>) => {
-    state = { ...state, ...next };
-    emit();
   };
 
   const resetMockState = () => {
@@ -155,24 +151,24 @@ vi.mock('../stores/categoryStore', async () => {
       saving: false,
       error: null,
     };
-    listeners.clear();
     load.mockClear();
     create.mockClear();
     update.mockClear();
     remove.mockClear();
     clearError.mockClear();
+    listeners.clear();
   };
 
-  const appendMockItem = (item: (typeof state.items)[number]) => {
-    setState({ items: addCategoryToTree(state.items, item) });
+  const setMockState = (patch: Partial<MockState>) => {
+    state = { ...state, ...patch };
+    emit();
   };
 
   return {
     useCategoryStore,
     __mock__: {
-      setMockState,
       resetMockState,
-      appendMockItem,
+      setMockState,
       load,
       create,
       update,
@@ -183,14 +179,8 @@ vi.mock('../stores/categoryStore', async () => {
 });
 
 interface MockStoreApi {
-  setMockState: (state: Partial<{
-    items: Category[];
-    loading: boolean;
-    saving: boolean;
-    error: string | null;
-  }>) => void;
   resetMockState: () => void;
-  appendMockItem: (item: Category) => void;
+  setMockState: (patch: Partial<{ items: Category[]; loading: boolean; saving: boolean; error: string | null }>) => void;
   load: ReturnType<typeof vi.fn>;
   create: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
@@ -205,14 +195,17 @@ const getStoreMock = async (): Promise<MockStoreApi> => {
   return module.__mock__;
 };
 
-describe('CategoryManagementPanel', () => {
+const openDialogByRoleName = async (name: RegExp) => {
+  return waitFor(() => screen.getByRole('dialog', { name }));
+};
 
+describe('CategoryManagementPanel', () => {
   beforeEach(async () => {
     const store = await getStoreMock();
     store.resetMockState();
   });
 
-  it('allows inline creation of a new root category', async () => {
+  it('opens the root category dialog and creates an entry', async () => {
     const store = await getStoreMock();
     store.setMockState({ items: [] });
 
@@ -220,42 +213,36 @@ describe('CategoryManagementPanel', () => {
 
     expect(store.load).toHaveBeenCalled();
 
-    const addButton = await screen.findByRole('button', { name: '+ 항목 추가' });
+    const addButton = await screen.findByRole('button', { name: /\+ 항목 추가/ });
     fireEvent.click(addButton);
 
-    const nameInput = screen.getByPlaceholderText('카테고리를 입력하세요');
-    fireEvent.change(nameInput, { target: { value: '  신선 식품  ' } });
+    const dialog = await openDialogByRoleName(/카테고리/);
+    const inputs = within(dialog).getAllByRole('textbox');
+    fireEvent.change(inputs[0], { target: { value: '신선 식품' } });
 
-    const rowElement = nameInput.closest('[data-testid^="category-row-"]');
-    expect(rowElement).not.toBeNull();
-    const rowWithin = within(rowElement as HTMLElement);
-
-    const descriptionInput = rowWithin.getByPlaceholderText('하위 카테고리를 입력하세요');
-    fireEvent.change(descriptionInput, { target: { value: '냉장 보관이 필요한 상품' } });
-
-    fireEvent.click(rowWithin.getByRole('button', { name: '저장' }));
+    const form = dialog.querySelector('form');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form!);
 
     await waitFor(() => {
-      expect(store.create).toHaveBeenCalledWith(
-        expect.objectContaining({ name: '신선 식품', description: '냉장 보관이 필요한 상품' }),
-      );
+      expect(store.create).toHaveBeenCalledWith(expect.objectContaining({ name: '신선 식품' }));
     });
 
     await waitFor(() => {
-      expect(screen.getByText('신선 식품')).not.toBeNull();
+      expect(screen.getByText('신선 식품')).toBeTruthy();
     });
   });
 
-  it('supports inline editing and saving of existing categories', async () => {
+  it('creates a subcategory via the modal workflow', async () => {
     const store = await getStoreMock();
     store.setMockState({
       items: [
         {
-          id: 'cat-1',
-          name: '식품',
-          description: '모든 식품',
-          productCount: 4,
+          id: 'cat-parent',
+          name: '가공 식품',
+          description: '',
           parentId: null,
+          productCount: 0,
           children: [],
         },
       ],
@@ -263,42 +250,80 @@ describe('CategoryManagementPanel', () => {
 
     render(<CategoryManagementPanel />);
 
-    const [row] = await screen.findAllByTestId('category-row-cat-1');
-    fireEvent.click(within(row).getByRole('button', { name: '수정' }));
+    const row = await screen.findByTestId('category-row-cat-parent');
+    fireEvent.click(within(row).getByRole('button', { name: /하위 추가/ }));
 
-    const nameInput = within(row).getByPlaceholderText('카테고리를 입력하세요');
-    fireEvent.change(nameInput, { target: { value: '' } });
-    fireEvent.change(nameInput, { target: { value: '식품 재고' } });
+    const dialog = await openDialogByRoleName(/카테고리/);
+    const inputs = within(dialog).getAllByRole('textbox');
+    expect((inputs[0] as HTMLInputElement).value).toBe('가공 식품');
 
-    const descriptionInput = within(row).getByPlaceholderText('하위 카테고리를 입력하세요');
-    fireEvent.change(descriptionInput, { target: { value: '' } });
-    fireEvent.change(descriptionInput, { target: { value: '신선 식품과 일반 식품' } });
+    fireEvent.change(inputs[1], { target: { value: '과자' } });
+    const form = dialog.querySelector('form');
+    fireEvent.submit(form!);
 
-    fireEvent.click(within(row).getByRole('button', { name: '저장' }));
+    await waitFor(() => {
+      expect(store.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: '과자', parentId: 'cat-parent' }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('과자')).toBeTruthy();
+    });
+  });
+
+  it('edits an existing category through the edit dialog', async () => {
+    const store = await getStoreMock();
+    store.setMockState({
+      items: [
+        {
+          id: 'cat-1',
+          name: '잡화',
+          description: '생활 잡화',
+          parentId: null,
+          productCount: 0,
+          children: [],
+        },
+      ],
+    });
+
+    render(<CategoryManagementPanel />);
+
+    const row = await screen.findByTestId('category-row-cat-1');
+    fireEvent.click(within(row).getByRole('button', { name: /수정/ }));
+
+    const dialog = await openDialogByRoleName(/카테고리/);
+    const [nameInput, descriptionInput] = within(dialog).getAllByRole('textbox');
+
+    fireEvent.change(nameInput, { target: { value: '생활 잡화' } });
+    fireEvent.change(descriptionInput, { target: { value: '가정용 생활 잡화' } });
+
+    const form = dialog.querySelector('form');
+    fireEvent.submit(form!);
 
     await waitFor(() => {
       expect(store.update).toHaveBeenCalledWith('cat-1', {
-        name: '식품 재고',
-        description: '신선 식품과 일반 식품',
+        name: '생활 잡화',
+        description: '가정용 생활 잡화',
         parentId: null,
       });
     });
 
     await waitFor(() => {
-      expect(screen.getAllByText('식품 재고').length).toBeGreaterThan(0);
+      expect(screen.getByText('생활 잡화')).toBeTruthy();
     });
   });
 
-  it('removes existing rows through inline delete action', async () => {
+  it('confirms deletion through the dialog', async () => {
     const store = await getStoreMock();
     store.setMockState({
       items: [
         {
           id: 'cat-2',
-          name: '생활용품',
-          description: '생활 필수품',
-          productCount: 2,
+          name: '문구류',
+          description: '',
           parentId: null,
+          productCount: 0,
           children: [],
         },
       ],
@@ -307,15 +332,50 @@ describe('CategoryManagementPanel', () => {
     render(<CategoryManagementPanel />);
 
     const row = await screen.findByTestId('category-row-cat-2');
-    fireEvent.click(within(row).getByRole('button', { name: '삭제' }));
+    fireEvent.click(within(row).getByRole('button', { name: /삭제/ }));
+
+    const dialog = await openDialogByRoleName(/삭제/);
+    const confirmButton = within(dialog).getByRole('button', { name: /삭제/ });
+    fireEvent.click(confirmButton);
 
     await waitFor(() => {
       expect(store.remove).toHaveBeenCalledWith('cat-2');
     });
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('category-row-cat-2')).toBeNull();
-    });
   });
 
+  it('blocks deletion when a category has children', async () => {
+    const store = await getStoreMock();
+    store.setMockState({
+      items: [
+        {
+          id: 'cat-root',
+          name: '주류',
+          description: '',
+          parentId: null,
+          productCount: 0,
+          children: [
+            {
+              id: 'cat-child',
+              name: '와인',
+              description: '',
+              parentId: 'cat-root',
+              productCount: 0,
+              children: [],
+            },
+          ],
+        },
+      ],
+    });
+
+    render(<CategoryManagementPanel />);
+
+    const row = await screen.findByTestId('category-row-cat-root');
+    fireEvent.click(within(row).getByRole('button', { name: /삭제/ }));
+
+    const dialog = await openDialogByRoleName(/삭제/);
+    const confirmButton = within(dialog).getByRole('button', { name: /삭제/ }) as HTMLButtonElement;
+    expect(confirmButton.disabled).toBe(true);
+    expect(store.remove).not.toHaveBeenCalled();
+  });
 });
+

@@ -135,6 +135,67 @@ async function main() {
       body.warehouseTotals.every((entry) => entry.warehouseCode !== 'WH-BUSAN'),
       'Warehouse totals should not include SKUs without products',
     );
+
+    const issueMovementResponse = await server.inject({
+      method: 'POST',
+      url: '/api/movements',
+      payload: {
+        type: 'ISSUE',
+        sku: 'SKU-COFFEE',
+        qty: 5,
+        fromWarehouse: 'WH-SEOUL',
+        fromLocation: 'SEOUL-A1',
+        userId: 'tester',
+        occurredAt: new Date().toISOString(),
+      },
+    });
+    assert.equal(issueMovementResponse.statusCode, 201);
+
+    const toDate = new Date();
+    const toISO = toDate.toISOString().slice(0, 10);
+    const fromDate = new Date(`${toISO}T00:00:00.000Z`);
+    fromDate.setUTCDate(fromDate.getUTCDate() - 6);
+    const fromISO = fromDate.toISOString().slice(0, 10);
+
+    const analysisResponse = await server.inject({
+      method: 'GET',
+      url: `/api/inventory/analysis?from=${fromISO}&to=${toISO}&warehouseCode=WH-SEOUL`,
+    });
+    assert.equal(analysisResponse.statusCode, 200);
+
+    const analysisBody = analysisResponse.json() as {
+      range: { dayCount: number; groupBy: string };
+      movementSeries: Array<{ date: string; inbound: number; outbound: number; adjustments: number }>;
+      stockSeries: Array<{ date: string; onHand: number; available: number }>;
+      periodSeries: Array<{ label: string }>;
+      totals: { currentOnHand: number; stockoutEtaDays: number | null };
+    };
+    assert.ok(Array.isArray(analysisBody.movementSeries));
+    assert.equal(analysisBody.movementSeries.length, analysisBody.range.dayCount);
+    assert.equal(analysisBody.stockSeries.length, analysisBody.range.dayCount);
+    assert.ok(analysisBody.periodSeries.length >= 1);
+    assert.ok(
+      analysisBody.range.groupBy === 'week' || analysisBody.range.groupBy === 'month',
+      'groupBy should be week or month',
+    );
+    assert.ok(Number.isFinite(analysisBody.totals.currentOnHand));
+
+    const warehouseItemsResponse = await server.inject({
+      method: 'GET',
+      url: `/api/inventory/warehouse-items?from=${fromISO}&to=${toISO}&warehouseCode=WH-SEOUL`,
+    });
+    assert.equal(warehouseItemsResponse.statusCode, 200);
+
+    const warehouseItemsBody = warehouseItemsResponse.json() as {
+      items: Array<{ sku: string }>;
+      movementSeries: Array<unknown>;
+    };
+    assert.ok(Array.isArray(warehouseItemsBody.items));
+    assert.equal(warehouseItemsBody.movementSeries.length, analysisBody.range.dayCount);
+    assert.ok(
+      warehouseItemsBody.items.some((item) => item.sku === 'SKU-COFFEE'),
+      'warehouse items should include the seeded SKU',
+    );
   } finally {
     await server.close();
     __resetMovementStore();

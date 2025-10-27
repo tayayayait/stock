@@ -24,7 +24,7 @@ describe('PoliciesPage policy table', () => {
     productId: 'product-1',
     legacyProductId: 1,
     sku: 'SKU-TEST',
-    name: '테스트 상품',
+    name: '비스킷 제품',
     category: '식품',
     subCategory: '과자',
     dailyAvg: 120,
@@ -74,8 +74,10 @@ describe('PoliciesPage policy table', () => {
     renderPoliciesPage([product], [row]);
 
     const headers = await screen.findAllByRole('columnheader');
-    const headerTexts = headers.map((header) => header.textContent?.trim());
-    expect(headerTexts).toEqual([
+    const headerTexts = headers.map((header) => header.textContent?.trim() ?? '');
+
+    expect(headerTexts).toHaveLength(7);
+    expect(headerTexts.slice(0, 7)).toEqual([
       '품명',
       'SKU',
       '예측 수요량 (EA/일)',
@@ -98,15 +100,26 @@ describe('PoliciesPage policy table', () => {
 
     const { user, rowsRef } = renderPoliciesPage([product], [initialRow]);
 
-    vi.spyOn(window, 'prompt')
-      .mockImplementationOnce(() => '150')
-      .mockImplementationOnce(() => '45')
-      .mockImplementationOnce(() => '18');
-
     const editButton = await screen.findByRole('button', { name: '수정' });
     await user.click(editButton);
 
-    await screen.findByText(`${product.sku} 정책을 수정했습니다.`);
+    const demandInput = await screen.findByLabelText('예측 수요량 (EA/일)');
+    await user.clear(demandInput);
+    await user.type(demandInput, '150');
+
+    const stdInput = screen.getByLabelText('수요 표준편차 (σ)');
+    await user.clear(stdInput);
+    await user.type(stdInput, '45');
+
+    const leadInput = screen.getByLabelText('리드타임 (L, 일)');
+    await user.clear(leadInput);
+    await user.type(leadInput, '18');
+
+    const serviceLevelSelect = screen.getByRole('combobox', { name: '서비스 수준 (%)' });
+    await user.selectOptions(serviceLevelSelect, '97.5');
+
+    const saveButton = screen.getByRole('button', { name: '저장' });
+    await user.click(saveButton);
 
     const rowElement = screen.getByText(product.name).closest('tr');
     expect(rowElement).not.toBeNull();
@@ -114,33 +127,18 @@ describe('PoliciesPage policy table', () => {
       throw new Error('행을 찾을 수 없습니다.');
     }
 
-    const serviceLevelSelect = within(rowElement).getByRole('combobox', {
-      name: `${product.sku} 서비스 수준`,
-    });
-    await user.selectOptions(serviceLevelSelect, '97.5');
-
-    await waitFor(() => {
-      expect(rowsRef.current).toHaveLength(1);
-      const [row] = rowsRef.current;
-      expect(row.serviceLevelPercent).toBe(97.5);
-    });
-
-    expect(serviceLevelSelect).toHaveValue('97.5');
-
-    const demandCell = within(rowElement).getByText('150');
-    const stdDevCell = within(rowElement).getByText('45');
-    const leadTimeCell = within(rowElement).getByText('18');
-
-    expect(demandCell).toBeInTheDocument();
-    expect(stdDevCell).toBeInTheDocument();
-    expect(leadTimeCell).toBeInTheDocument();
-
     await waitFor(() => {
       expect(rowsRef.current).toHaveLength(1);
       const [row] = rowsRef.current;
       expect(row.forecastDemand).toBe(150);
       expect(row.demandStdDev).toBe(45);
       expect(row.leadTimeDays).toBe(18);
+      expect(row.serviceLevelPercent).toBe(97.5);
     });
+
+    expect(serviceLevelSelect).toHaveValue('97.5');
+    expect(within(rowElement).getByText('150')).toBeInTheDocument();
+    expect(within(rowElement).getByText('45')).toBeInTheDocument();
+    expect(within(rowElement).getByText('18')).toBeInTheDocument();
   });
 });
