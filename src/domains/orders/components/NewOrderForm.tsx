@@ -943,25 +943,29 @@ const NewOrderForm: React.FC<NewOrderFormProps> = ({
               product,
               stats: computeStatsForProduct(product),
             }));
-            const zeroStockFiltered =
-              hideZeroWarehouseStock && formState.warehouseCode
-                ? candidateWithStats.filter(({ product, stats }) => {
+            const normalizedSearch = item.searchTerm.trim().toLowerCase();
+            const searchFiltered = normalizedSearch
+              ? candidateWithStats.filter(({ product }) => {
+                  const name = product.name.toLowerCase();
+                  const sku = product.sku.toLowerCase();
+                  const id = product.productId?.toLowerCase() ?? '';
+                  return (
+                    name.includes(normalizedSearch) ||
+                    sku.includes(normalizedSearch) ||
+                    id.includes(normalizedSearch)
+                  );
+                })
+              : candidateWithStats;
+            const productChoices =
+              hideZeroWarehouseStock && formState.warehouseCode && !normalizedSearch
+                ? searchFiltered.filter(({ product, stats }) => {
                     const quantity = stats?.warehouseQuantity ?? 0;
                     if (quantity > 0) {
                       return true;
                     }
                     return selectedProduct?.sku === product.sku;
                   })
-                : candidateWithStats;
-            const normalizedSearch = item.searchTerm.trim().toLowerCase();
-            const productChoices = normalizedSearch
-              ? zeroStockFiltered.filter(({ product }) => {
-                  const name = product.name.toLowerCase();
-                  const sku = product.sku.toLowerCase();
-                  const id = product.productId?.toLowerCase() ?? '';
-                  return name.includes(normalizedSearch) || sku.includes(normalizedSearch) || id.includes(normalizedSearch);
-                })
-              : zeroStockFiltered;
+                : searchFiltered;
             const hasVisibleOptions = productChoices.length > 0;
             const { warehouseQuantity, locationQuantity } = computeStatsForProduct(selectedProduct);
             const stockContext = (() => {

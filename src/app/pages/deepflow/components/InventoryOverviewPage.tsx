@@ -12,8 +12,9 @@ import {
   CartesianGrid,
 } from "recharts";
 
-import type { Product, InventoryRisk } from "../../../domains/products";
+import type { Product, InventoryRisk } from "../../../../domains/products";
 import type { ForecastResponse, ApiWarehouse } from "../../../../services/api";
+import type { PolicyDraft } from "../../../../services/policies";
 import { fetchWarehouses } from "../../../../services/api";
 import {
   fetchInventoryAnalysis,
@@ -49,6 +50,7 @@ interface InventoryOverviewPageProps {
   riskSummary: RiskSummaryEntry[];
   forecastCache: Record<string, ForecastResponse>;
   forecastStatusBySku: Record<string, ForecastStateEntry>;
+  policies: PolicyDraft[];
 }
 
 type WarehouseScopedItem = InventoryWarehouseItem & {
@@ -56,9 +58,9 @@ type WarehouseScopedItem = InventoryWarehouseItem & {
   category: string;
 };
 
-const RISK_STABLE = "\uC548\uC815";
-const RISK_SHORTAGE = "\uACB0\uD488\uC704\uD5D8";
-const RISK_OVERSTOCK = "\uACFC\uC694";
+const RISK_STABLE: InventoryRisk = "정상";
+const RISK_SHORTAGE: InventoryRisk = "결품위험";
+const RISK_OVERSTOCK: InventoryRisk = "과잉";
 
 const riskDisplayLabel: Record<InventoryRisk, string> = {
   [RISK_STABLE]: "안정",
@@ -78,6 +80,16 @@ const calculateAvailableStock = (row: Product): number => Math.max(row.onHand - 
 
 const toDateInputValue = (date: Date): string =>
   `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+
+const projectStockoutDate = (daysAhead: number | null | undefined): string | null => {
+  if (!Number.isFinite(daysAhead as number)) {
+    return null;
+  }
+  const today = new Date();
+  const base = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  base.setUTCDate(base.getUTCDate() + Math.max(0, Math.round(daysAhead as number)));
+  return toDateInputValue(base);
+};
 
 const createDefaultRange = () => {
   const end = new Date();
@@ -100,6 +112,30 @@ const formatDateLabel = (value: string) => {
   }
   const date = new Date(timestamp);
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+};
+
+const POLICY_SERVICE_LEVEL_Z_TABLE: Array<{ percent: number; z: number }> = [
+  { percent: 90, z: 1.2816 },
+  { percent: 95, z: 1.6449 },
+  { percent: 98, z: 2.0537 },
+  { percent: 99, z: 2.3263 },
+];
+
+const resolvePolicyServiceLevelZ = (percent: number | null | undefined): number => {
+  if (!Number.isFinite(percent ?? NaN)) {
+    return 0;
+  }
+  const value = percent as number;
+  let best = POLICY_SERVICE_LEVEL_Z_TABLE[0];
+  let minDiff = Math.abs(value - best.percent);
+  for (const entry of POLICY_SERVICE_LEVEL_Z_TABLE) {
+    const diff = Math.abs(value - entry.percent);
+    if (diff < minDiff) {
+      best = entry;
+      minDiff = diff;
+    }
+  }
+  return best.z;
 };
 
 const Card: React.FC<{ title?: string; actions?: React.ReactNode; className?: string; children: React.ReactNode }> = ({
@@ -129,9 +165,19 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
   skus,
   selected,
   setSelected,
+  policies,
   riskSummary,
 }) => {
   const safeRiskSummary = Array.isArray(riskSummary) ? riskSummary : [];
+  const policyMap = useMemo(() => {
+    const map = new Map<string, PolicyDraft>();
+    policies.forEach((policy) => {
+      if (policy?.sku) {
+        map.set(policy.sku.trim().toUpperCase(), policy);
+      }
+    });
+    return map;
+  }, [policies]);
   const [{ from: defaultFrom, to: defaultTo }] = useState(createDefaultRange);
   const [search, setSearch] = useState("");
   const [riskFilter, setRiskFilter] = useState<"all" | InventoryRisk>("all");
@@ -139,7 +185,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
   const [warehousesLoading, setWarehousesLoading] = useState(false);
   const [warehousesError, setWarehousesError] = useState<string | null>(null);
   const [warehouseFetchVersion, setWarehouseFetchVersion] = useState(0);
-  const [selectedWarehouseId, setSelectedWarehouseId] = useState<number | null>(null);
+  const [selectedWarehouseCode, setSelectedWarehouseCode] = useState<string | null>(null);
   const [rangeFrom, setRangeFrom] = useState(defaultFrom);
   const [rangeTo, setRangeTo] = useState(defaultTo);
   const [analysis, setAnalysis] = useState<InventoryAnalysisResponse | null>(null);
@@ -148,6 +194,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
   const [warehouseSnapshot, setWarehouseSnapshot] = useState<InventoryWarehouseItemsResponse | null>(null);
   const [warehouseSnapshotLoading, setWarehouseSnapshotLoading] = useState(false);
   const [warehouseSnapshotError, setWarehouseSnapshotError] = useState<string | null>(null);
+  const [chartSku, setChartSku] = useState<string | null>(null);
 
   const reloadWarehouses = useCallback(() => setWarehouseFetchVersion((value) => value + 1), []);
 
@@ -163,11 +210,11 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
         }
         const items = Array.isArray(response.items) ? response.items : [];
         setWarehouses(items);
-        setSelectedWarehouseId((current) => {
-          if (current !== null && items.some((entry) => entry.id === current)) {
+        setSelectedWarehouseCode((current) => {
+          if (current && items.some((entry) => entry.code === current)) {
             return current;
           }
-          return items.length > 0 ? items[0].id ?? null : null;
+          return items.length > 0 ? items[0]?.code ?? null : null;
         });
       })
       .catch((error) => {
@@ -190,13 +237,31 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
   }, [warehouseFetchVersion]);
 
   const selectedWarehouse = useMemo(() => {
-    if (selectedWarehouseId === null) {
+    if (!selectedWarehouseCode) {
       return null;
     }
-    return warehouses.find((entry) => entry.id === selectedWarehouseId) ?? null;
-  }, [selectedWarehouseId, warehouses]);
+    return warehouses.find((entry) => entry.code === selectedWarehouseCode) ?? null;
+  }, [selectedWarehouseCode, warehouses]);
 
-  const selectedWarehouseCode = selectedWarehouse?.code ?? null;
+  useEffect(() => {
+    if (!chartSku) {
+      return;
+    }
+    if (!skus.some((product) => product.sku === chartSku)) {
+      setChartSku(null);
+    }
+  }, [chartSku, skus]);
+
+  const chartSkuLabel = useMemo(() => {
+    if (!chartSku) {
+      return null;
+    }
+    const match = skus.find((product) => product.sku === chartSku);
+    if (match) {
+      return `${match.name} (${match.sku})`;
+    }
+    return chartSku;
+  }, [chartSku, skus]);
 
   useEffect(() => {
     if (!isValidRange(rangeFrom, rangeTo)) {
@@ -209,13 +274,16 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
     setAnalysisLoading(true);
     setAnalysisError(null);
 
-    const params: { from: string; to: string; warehouseCode?: string; groupBy: "month" } = {
+    const params: { from: string; to: string; warehouseCode?: string; sku?: string; groupBy: "month" } = {
       from: rangeFrom,
       to: rangeTo,
       groupBy: "month",
     };
     if (selectedWarehouseCode) {
       params.warehouseCode = selectedWarehouseCode;
+    }
+    if (chartSku) {
+      params.sku = chartSku;
     }
 
     fetchInventoryAnalysis(params)
@@ -241,7 +309,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [rangeFrom, rangeTo, selectedWarehouseCode]);
+  }, [chartSku, rangeFrom, rangeTo, selectedWarehouseCode]);
 
   useEffect(() => {
     if (!selectedWarehouseCode) {
@@ -318,8 +386,22 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
     });
   }, [riskFilter, search, skus]);
 
+  const isWarehouseScoped = Boolean(selectedWarehouseCode);
+  const warehouseItemCount = warehouseSnapshot?.items?.length ?? 0;
+  const showWarehouseEmptyState = isWarehouseScoped && !warehouseSnapshotLoading && warehouseItemCount === 0;
+  const hasWarehouseData = !isWarehouseScoped || warehouseItemCount > 0 || warehouseSnapshotLoading;
+
   const tableRows = useMemo(() => {
-    return filteredSkus
+    if (showWarehouseEmptyState) {
+      return [];
+    }
+
+    const scopedProducts =
+      isWarehouseScoped && warehouseItemCount > 0
+        ? filteredSkus.filter((product) => warehouseItemsIndex.has(product.sku))
+        : filteredSkus;
+
+    return scopedProducts
       .map((product) => {
         const scoped = warehouseItemsIndex.get(product.sku);
         const onHand = scoped ? scoped.onHand : product.onHand;
@@ -328,8 +410,20 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
         const inbound = scoped ? scoped.inbound : product.totalInbound ?? 0;
         const outbound = scoped ? scoped.outbound : product.totalOutbound ?? 0;
         const avgOutbound = scoped ? scoped.avgDailyOutbound : product.avgOutbound7d ?? 0;
-        const safetyStock = scoped ? scoped.safetyStock : Math.round(Math.max(product.dailyAvg, 0) * 12);
+
+        const policy = policyMap.get(product.sku.trim().toUpperCase());
+        const policySigma = policy && Number.isFinite(policy.demandStdDev ?? NaN) ? Math.max(policy.demandStdDev as number, 0) : null;
+        const policyLeadTime = policy && Number.isFinite(policy.leadTimeDays ?? NaN) ? Math.max(policy.leadTimeDays as number, 0) : null;
+        const policyServiceLevel = policy && Number.isFinite(policy.serviceLevelPercent ?? NaN) ? (policy.serviceLevelPercent as number) : null;
+        const policyZ = resolvePolicyServiceLevelZ(policyServiceLevel);
+        const policySafety =
+          policySigma !== null && policyLeadTime !== null && policyZ > 0
+            ? Math.max(0, Math.round(policySigma * policyZ * Math.sqrt(policyLeadTime)))
+            : null;
+
+        const safetyStock = scoped ? scoped.safetyStock : policySafety ?? Math.round(Math.max(product.dailyAvg, 0) * 12);
         const etaDays = scoped?.stockoutEtaDays ?? (avgOutbound > 0 ? available / avgOutbound : null);
+        const projectedDate = scoped?.projectedStockoutDate ?? projectStockoutDate(etaDays);
 
         return {
           sku: product.sku,
@@ -344,10 +438,11 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
           avgDailyOutbound: avgOutbound,
           safetyStock,
           stockoutEtaDays: etaDays,
+          projectedStockoutDate: projectedDate,
         };
       })
       .sort((a, b) => b.available - a.available);
-  }, [filteredSkus, warehouseItemsIndex]);
+  }, [filteredSkus, isWarehouseScoped, policyMap, showWarehouseEmptyState, warehouseItemCount, warehouseItemsIndex]);
 
   const quickRangeHandler = useCallback((days: number) => {
     const end = new Date();
@@ -376,7 +471,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
   );
 
   const monthlyOutboundData = useMemo(() => {
-    if (!analysis?.periodSeries) {
+    if (!analysis?.periodSeries || !hasWarehouseData) {
       return [];
     }
 
@@ -384,10 +479,10 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
       label: period.label,
       outbound: period.outbound,
     }));
-  }, [analysis]);
+  }, [analysis, hasWarehouseData]);
 
   const availableTrendData = useMemo(() => {
-    if (!analysis?.stockSeries) {
+    if (!analysis?.stockSeries || !hasWarehouseData) {
       return [];
     }
 
@@ -395,10 +490,10 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
       date: formatDateLabel(point.date),
       available: point.available,
     }));
-  }, [analysis]);
+  }, [analysis, hasWarehouseData]);
 
   const availableVsSafetyData = useMemo(() => {
-    if (!analysis?.stockSeries) {
+    if (!analysis?.stockSeries || !hasWarehouseData) {
       return [];
     }
 
@@ -407,10 +502,10 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
       available: point.available,
       safety: point.safetyStock,
     }));
-  }, [analysis]);
+  }, [analysis, hasWarehouseData]);
 
   const overstockRateData = useMemo(() => {
-    if (!analysis?.stockSeries) {
+    if (!analysis?.stockSeries || !hasWarehouseData) {
       return [];
     }
 
@@ -424,7 +519,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
         overstockRate: Number.isFinite(rate) ? Math.round(rate * 10) / 10 : 0,
       };
     });
-  }, [analysis]);
+  }, [analysis, hasWarehouseData]);
 
   const analysisTotals = analysis?.totals ?? null;
 
@@ -450,16 +545,16 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">창고</label>
                 <select
                   className="min-w-[160px] rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:bg-slate-100 disabled:text-slate-400"
-                  value={selectedWarehouseId !== null ? String(selectedWarehouseId) : ""}
+                  value={selectedWarehouseCode ?? ""}
                   onChange={(event) => {
                     const value = event.target.value;
-                    setSelectedWarehouseId(value ? Number(value) : null);
+                    setSelectedWarehouseCode(value || null);
                   }}
                   disabled={warehousesLoading && warehouses.length === 0}
                 >
                   <option value="">전체 창고</option>
                   {warehouses.map((warehouse) => (
-                    <option key={warehouse.id} value={warehouse.id}>
+                    <option key={warehouse.code} value={warehouse.code}>
                       {warehouse.name} ({warehouse.code})
                     </option>
                   ))}
@@ -499,8 +594,22 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
               </div>
             </div>
           </div>
-          <div className="text-xs text-slate-500 lg:text-right">
-            {selectedWarehouse ? `${selectedWarehouse.name} (${selectedWarehouse.code}) 기준` : "전체 창고 기준"}
+          <div className="flex flex-col gap-1 text-xs text-slate-500 lg:items-end lg:text-right">
+            <span>{selectedWarehouse ? `${selectedWarehouse.name} (${selectedWarehouse.code}) 기준` : "전체 창고 기준"}</span>
+            {chartSku ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span>{chartSkuLabel ? `${chartSkuLabel} 기준` : `SKU ${chartSku} 기준`}</span>
+                <button
+                  type="button"
+                  className="rounded-full border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-500 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
+                  onClick={() => setChartSku(null)}
+                >
+                  전체 상품 보기
+                </button>
+              </div>
+            ) : (
+              <span>전체 상품 기준</span>
+            )}
           </div>
         </div>
         {warehousesError && (
@@ -569,27 +678,30 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
                 <th className="px-3 py-2 text-right">기간 입고</th>
                 <th className="px-3 py-2 text-right">기간 출고</th>
                 <th className="px-3 py-2 text-right">일 평균 출고</th>
-                <th className="px-3 py-2 text-right">소진 ETA(일)</th>
+                <th className="px-3 py-2 text-right">재고소진예상일(YYYY-MM-DD)</th>
                 <th className="px-3 py-2 text-center">위험도</th>
               </tr>
             </thead>
             <tbody>
-              {tableRows.length === 0 ? (
+              {tableRows.length === 0 && !warehouseSnapshotLoading ? (
                 <tr>
-                  <td colSpan={11} className="px-3 py-10 text-center text-slate-500">
-                    조건에 맞는 품목이 없습니다.
+                  <td colSpan={12} className="px-3 py-10 text-center text-slate-500">
+                    데이터 없음
                   </td>
                 </tr>
               ) : (
                 tableRows.map((row) => (
                   <tr
                     key={row.sku}
-                    className="border-t border-slate-100 transition hover:bg-indigo-50/40"
+                    className={`cursor-pointer border-t border-slate-100 transition hover:bg-indigo-50/40 ${
+                      chartSku === row.sku ? "bg-indigo-50/60" : ""
+                    }`}
                     onClick={() => {
                       const product = skus.find((sku) => sku.sku === row.sku);
                       if (product) {
                         setSelected(product);
                       }
+                      setChartSku(row.sku);
                     }}
                   >
                     <td className="px-3 py-2 font-mono text-xs text-slate-500">{row.sku}</td>
@@ -604,9 +716,10 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
                       {row.avgDailyOutbound ? row.avgDailyOutbound.toFixed(1) : "—"}
                     </td>
                     <td className="px-3 py-2 text-right text-slate-600">
-                      {Number.isFinite(row.stockoutEtaDays ?? NaN) && row.stockoutEtaDays !== null
-                        ? Math.max(0, Math.round(row.stockoutEtaDays)).toLocaleString()
-                        : "—"}
+                      {row.projectedStockoutDate ??
+                        (Number.isFinite(row.stockoutEtaDays ?? NaN) && row.stockoutEtaDays !== null
+                          ? projectStockoutDate(row.stockoutEtaDays)
+                          : null) ?? "데이터 없음"}
                     </td>
                     <td className="px-3 py-2 text-center">
                       <RiskTag risk={row.risk} />
@@ -623,7 +736,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
         <div className="h-60">
           {monthlyOutboundData.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              해당 기간의 출고 데이터가 없습니다.
+              {showWarehouseEmptyState ? "데이터 없음" : "해당 기간에 출고 데이터가 없습니다."}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -644,7 +757,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
         <div className="h-60">
           {availableTrendData.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              표시할 가용 재고 데이터가 없습니다.
+              {showWarehouseEmptyState ? "데이터 없음" : "표시할 재고 추이 데이터가 없습니다."}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -665,7 +778,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
         <div className="h-60">
           {availableVsSafetyData.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              비교할 데이터가 없습니다.
+              {showWarehouseEmptyState ? "데이터 없음" : "재고 대비 안전재고 데이터가 없습니다."}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -695,7 +808,7 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
         <div className="h-60">
           {overstockRateData.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              초과 재고율 데이터가 없습니다.
+              {showWarehouseEmptyState ? "데이터 없음" : "과잉 재고율 데이터가 없습니다."}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -716,3 +829,5 @@ const InventoryOverviewPage: React.FC<InventoryOverviewPageProps> = ({
 };
 
 export default InventoryOverviewPage;
+
+

@@ -111,6 +111,104 @@ const CSV_HEADER_CONFIG: Record<CsvUploadType, { required: string[]; optional: s
 
 const TEMPLATE_ROW_LIMIT = 5;
 
+const sanitizeHeader = (value: string) => value.trim().toLowerCase().replace(/[\s_\-./]+/g, '');
+
+const PRODUCT_HEADER_SYNONYMS: Record<string, string[]> = {
+  sku: ['sku', '품목코드', '상품코드', 'itemcode', 'item_code', 'code'],
+  name: ['name', 'productname', '상품명', '품목명', '제품명', 'description'],
+  category: ['category', '카테고리', '분류', '대분류', '품목분류'],
+  subCategory: ['subcategory', '하위카테고리', '중분류', '소분류'],
+  brand: ['brand', '브랜드'],
+  unit: ['unit', 'unitofmeasure', 'uom', '단위', '측정단위'],
+  packCase: ['packcase', 'pack_case', 'pack/case', '포장단위', '묶음단위'],
+  abcGrade: ['abcgrade', 'abc', 'abc등급', 'abc 등급'],
+  xyzGrade: ['xyzgrade', 'xyz', 'xyz등급', 'xyz 등급'],
+  bufferRatio: ['bufferratio', 'buffer_ratio', 'buffer ratio', '버퍼율', '안전율'],
+  dailyAvg: [
+    'dailyavg',
+    'average_daily_demand',
+    'avgdemand',
+    '월평균출고',
+    '평균일수요',
+    '평균출고량',
+  ],
+  dailyStd: [
+    'dailystd',
+    'demandstddev',
+    'stddev',
+    'sigma',
+    '수요표준편차',
+    '표준편차',
+  ],
+  isActive: ['isactive', '활성화', '판매중', '사용여부'],
+  onHand: ['onhand', 'currentstock', '현재고', '재고', '재고수량'],
+  reserved: ['reserved', '할당', '예약', '예약재고'],
+  risk: ['risk', 'riskindicator', '위험도', '리스크'],
+  expiryDays: ['expirydays', 'shelflife', '유통기한', '유통일수'],
+  pack: ['pack', '포장', 'packqty'],
+  casePack: ['casepack', '케이스포장', 'case qty'],
+  bufferDays: ['bufferdays', '안전기간'],
+};
+
+const INITIAL_STOCK_HEADER_SYNONYMS: Record<string, string[]> = {
+  sku: ['sku', '품목코드', '상품코드', 'itemcode'],
+  warehouse: ['warehouse', '창고', '물류센터', 'warehousecode', 'wh'],
+  location: ['location', '로케이션', 'bin', 'shelf', 'rack', '위치', 'locationcode'],
+  onHand: ['onhand', 'currentstock', '재고', '재고수량', '현재고'],
+  reserved: ['reserved', '예약', '할당', 'reserve'],
+};
+
+const MOVEMENT_HEADER_SYNONYMS: Record<string, string[]> = {
+  sku: ['sku', '품목코드', '상품코드', 'itemcode'],
+  warehouse: ['warehouse', '창고', '물류센터', 'warehousecode', 'wh', '출고창고', '입고창고'],
+  location: ['location', '로케이션', 'bin', 'shelf', 'rack', '위치', 'locationcode'],
+  partner: ['partner', '거래처', '거래처코드', 'partnerid', '벤더', 'customer'],
+  quantity: ['quantity', 'qty', '수량', '수량ea', '입출고수량'],
+  type: ['type', '거래유형', '입출고', 'direction', 'inout', '입출고구분'],
+  reference: ['reference', 'refno', '참조번호', '문서번호', 'order', '주문번호'],
+  occurredAt: ['occurredat', 'date', '거래일', '발생일', '처리일', 'timestamp'],
+  memo: ['memo', '비고', '메모', '설명'],
+};
+
+type ColumnStatus = 'matched' | 'duplicate' | 'unknown';
+
+interface ColumnResolution {
+  original: string;
+  normalized: string;
+  canonical: string | null;
+  status: ColumnStatus;
+  duplicateOf?: string;
+}
+
+interface HeaderResolutionResult {
+  type: CsvUploadType;
+  columnMappings: ColumnResolution[];
+  canonicalColumns: string[];
+  missingRequired: string[];
+  warnings: string[];
+}
+
+const SYNONYM_LOOKUPS: Record<CsvUploadType, Map<string, string>> = {
+  products: buildSynonymLookup(PRODUCT_HEADER_SYNONYMS),
+  initial_stock: buildSynonymLookup(INITIAL_STOCK_HEADER_SYNONYMS),
+  movements: buildSynonymLookup(MOVEMENT_HEADER_SYNONYMS),
+};
+
+function buildSynonymLookup(source: Record<string, string[]>): Map<string, string> {
+  const lookup = new Map<string, string>();
+  Object.entries(source).forEach(([canonical, synonyms]) => {
+    const entries = new Set([canonical, ...synonyms]);
+    entries.forEach((entry) => {
+      const key = sanitizeHeader(entry);
+      if (!key) {
+        return;
+      }
+      lookup.set(key, canonical);
+    });
+  });
+  return lookup;
+}
+
 const DEFAULT_PRODUCT_TEMPLATE_SAMPLE: Record<string, string> = {
   sku: 'SAMPLE-SKU-001',
   name: 'Sample Product',
@@ -258,6 +356,141 @@ function stringifyCsv(headers: string[], rows: string[][]): string {
   return `\uFEFF${content}`;
 }
 
+function resolveColumnsForType(
+  headers: string[],
+  type: CsvUploadType,
+): { columnMappings: ColumnResolution[]; missingRequired: string[]; matchedCanonicals: Set<string> } {
+  const lookup = SYNONYM_LOOKUPS[type];
+  const usedCanonicals = new Set<string>();
+
+  const columnMappings = headers.map<ColumnResolution>((original) => {
+    const normalized = sanitizeHeader(original);
+    const canonical = lookup.get(normalized);
+
+    if (canonical && !usedCanonicals.has(canonical)) {
+      usedCanonicals.add(canonical);
+      return {
+        original,
+        normalized,
+        canonical,
+        status: 'matched',
+      };
+    }
+
+    if (canonical) {
+      return {
+        original,
+        normalized,
+        canonical: null,
+        status: 'duplicate',
+        duplicateOf: canonical,
+      };
+    }
+
+    return {
+      original,
+      normalized,
+      canonical: null,
+      status: 'unknown',
+    };
+  });
+
+  const required = CSV_HEADER_CONFIG[type].required;
+  const missingRequired = required.filter((field) => !usedCanonicals.has(field));
+
+  return {
+    columnMappings,
+    missingRequired,
+    matchedCanonicals: usedCanonicals,
+  };
+}
+
+function buildCanonicalColumns(mappings: ColumnResolution[]): string[] {
+  return mappings.map((mapping, index) => {
+    if (mapping.status === 'matched' && mapping.canonical) {
+      return mapping.canonical;
+    }
+    return `__extra_${index}`;
+  });
+}
+
+function buildHeaderWarnings(mappings: ColumnResolution[]): string[] {
+  const warnings: string[] = [];
+  mappings.forEach((mapping) => {
+    if (mapping.status === 'duplicate' && mapping.duplicateOf) {
+      warnings.push(`${mapping.original} 열이 ${mapping.duplicateOf}와(과) 중복되었습니다.`);
+    }
+    if (mapping.status === 'unknown') {
+      warnings.push(`${mapping.original} 열은 지원하지 않는 필드입니다.`);
+    }
+  });
+  return warnings;
+}
+
+function scoreHeaderResolution(
+  type: CsvUploadType,
+  mappings: ColumnResolution[],
+  missingRequired: string[],
+): number {
+  const requiredTotal = CSV_HEADER_CONFIG[type].required.length;
+  const optionalSet = new Set(CSV_HEADER_CONFIG[type].optional);
+  const requiredMatches = requiredTotal - missingRequired.length;
+  const optionalMatches = mappings.filter(
+    (mapping) => mapping.status === 'matched' && mapping.canonical && optionalSet.has(mapping.canonical),
+  ).length;
+  return requiredMatches * 100 + optionalMatches;
+}
+
+function resolveCsvHeaders(headers: string[], requestedType?: CsvUploadType): HeaderResolutionResult {
+  const trimmedHeaders = headers.map((header) => header.trim());
+
+  if (requestedType) {
+    const resolved = resolveColumnsForType(trimmedHeaders, requestedType);
+    return {
+      type: requestedType,
+      columnMappings: resolved.columnMappings,
+      canonicalColumns: buildCanonicalColumns(resolved.columnMappings),
+      missingRequired: resolved.missingRequired,
+      warnings: buildHeaderWarnings(resolved.columnMappings),
+    };
+  }
+
+  let best: HeaderResolutionResult | null = null;
+  let bestScore = -1;
+
+  CSV_TYPES.forEach((candidateType) => {
+    const resolved = resolveColumnsForType(trimmedHeaders, candidateType);
+    if (resolved.missingRequired.length > 0) {
+      return;
+    }
+    const score = scoreHeaderResolution(candidateType, resolved.columnMappings, resolved.missingRequired);
+    if (score > bestScore) {
+      bestScore = score;
+      best = {
+        type: candidateType,
+        columnMappings: resolved.columnMappings,
+        canonicalColumns: buildCanonicalColumns(resolved.columnMappings),
+        missingRequired: [],
+        warnings: buildHeaderWarnings(resolved.columnMappings),
+      };
+    }
+  });
+
+  if (!best) {
+    const fallbackType: CsvUploadType = 'products';
+    const resolved = resolveColumnsForType(trimmedHeaders, fallbackType);
+    return {
+      type: fallbackType,
+      columnMappings: resolved.columnMappings,
+      canonicalColumns: buildCanonicalColumns(resolved.columnMappings),
+      missingRequired: resolved.missingRequired,
+      warnings: buildHeaderWarnings(resolved.columnMappings),
+    };
+  }
+
+  return best;
+}
+
 function requireCsvType(type: string | undefined): CsvUploadType {
   if (!type || !CSV_TYPES.includes(type as CsvUploadType)) {
     throw new Error('지원하지 않는 CSV 유형입니다. (products, initial_stock, movements)');
@@ -298,11 +531,6 @@ function parseBoolean(value: string | undefined): boolean | undefined {
 function getCsvHeaders(type: CsvUploadType): string[] {
   const config = CSV_HEADER_CONFIG[type];
   return [...config.required, ...config.optional];
-}
-
-function validateHeaders(type: CsvUploadType, headers: string[]): string[] {
-  const required = CSV_HEADER_CONFIG[type].required;
-  return required.filter((header) => !headers.includes(header));
 }
 
 function parseProductRow(raw: Record<string, string>, lineNumber: number): ParsedRow {
@@ -730,7 +958,12 @@ function buildErrorCsv(job: CsvJob): string {
 export default async function csvRoutes(server: FastifyInstance) {
   server.post('/upload', async (request, reply) => {
     const { type: typeQuery } = request.query as { type?: string };
-    const type = requireCsvType(typeQuery);
+    const rawType = typeof typeQuery === 'string' ? typeQuery.trim() : '';
+    let requestedType: CsvUploadType | undefined;
+    const autoDetect = !rawType || sanitizeHeader(rawType) === 'auto';
+    if (!autoDetect) {
+      requestedType = requireCsvType(rawType);
+    }
 
     const body = (request.body ?? {}) as { stage?: string; content?: string; previewId?: string };
 
@@ -743,7 +976,7 @@ export default async function csvRoutes(server: FastifyInstance) {
       const entry = previewCache.get(previewId)!;
       previewCache.delete(previewId);
 
-      if (entry.type !== type) {
+      if (requestedType && entry.type !== requestedType) {
         return reply.code(400).send({ error: '요청한 type과 미리보기 유형이 일치하지 않습니다.' });
       }
 
@@ -751,7 +984,7 @@ export default async function csvRoutes(server: FastifyInstance) {
       const errorRows = entry.rows.filter((row) => row.action === 'error');
       const job: CsvJob = {
         id: jobId,
-        type,
+        type: entry.type,
         status: 'pending',
         total: entry.rows.length,
         processed: 0,
@@ -789,14 +1022,16 @@ export default async function csvRoutes(server: FastifyInstance) {
     }
 
     const [headerRow, ...dataRows] = table;
-    const columns = headerRow.map((column) => column.trim());
-    const missing = validateHeaders(type, columns);
-    if (missing.length > 0) {
-      return reply
-        .code(400)
-        .send({ error: 'CSV 헤더가 누락되었습니다.', details: missing.map((column) => `${column} 필드는 필수입니다.`) });
+    const headerResolution = resolveCsvHeaders(headerRow, autoDetect ? undefined : requestedType);
+    if (headerResolution.missingRequired.length > 0) {
+      return reply.code(400).send({
+        error: 'CSV 헤더가 누락되었습니다.',
+        details: headerResolution.missingRequired.map((column) => `${column} 필드는 필수입니다.`),
+      });
     }
 
+    const type = headerResolution.type;
+    const columns = headerResolution.canonicalColumns;
     if (type === 'products') {
       seedInitialStock(__getProductRecords());
     }
@@ -809,6 +1044,9 @@ export default async function csvRoutes(server: FastifyInstance) {
       id: previewId,
       type,
       columns,
+      originalColumns: headerRow,
+      columnMappings: headerResolution.columnMappings,
+      warnings: headerResolution.warnings,
       rows: parsedRows,
       summary,
       createdAt: Date.now(),

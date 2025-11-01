@@ -88,7 +88,7 @@ const SKU_PREFIX = 'SKU';
 const SKU_SEGMENT_LENGTH = 8;
 const SKU_MAX_ATTEMPTS = 1000;
 
-const normalizeSku = (value: string): string => value.trim().toUpperCase();
+export const normalizeSku = (value: string): string => value.trim().toUpperCase();
 
 const createSkuSegment = (): string => {
   const cryptoApi = globalThis?.crypto;

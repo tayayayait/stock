@@ -140,6 +140,7 @@ export interface InventoryAnalysisResponse {
   range: InventoryAnalysisRange;
   scope: {
     warehouseCode: string | null;
+    sku: string | null;
   };
   totals: InventoryAnalysisTotals;
   movementSeries: InventoryDashboardMovementPoint[];
@@ -163,6 +164,7 @@ export interface InventoryWarehouseItem {
   outbound: number;
   safetyStock: number;
   avgDailyOutbound: number;
+  avgDailyInbound: number;
   stockoutEtaDays: number | null;
   projectedStockoutDate: string | null;
   trend: InventoryWarehouseItemTrendPoint[];
@@ -180,6 +182,7 @@ export interface InventoryWarehouseItemsResponse {
     inbound: number;
     outbound: number;
     avgDailyOutbound: number;
+    avgDailyInbound: number;
     onHand: number;
     reserved: number;
     available: number;
@@ -195,6 +198,7 @@ export async function fetchInventoryAnalysis(params: {
   from: string;
   to: string;
   warehouseCode?: string | null;
+  sku?: string | null;
   groupBy?: 'week' | 'month';
 }): Promise<InventoryAnalysisResponse> {
   const search = new URLSearchParams();
@@ -202,6 +206,9 @@ export async function fetchInventoryAnalysis(params: {
   search.set('to', params.to);
   if (params.warehouseCode) {
     search.set('warehouseCode', params.warehouseCode);
+  }
+  if (params.sku) {
+    search.set('sku', params.sku);
   }
   if (params.groupBy) {
     search.set('groupBy', params.groupBy);

@@ -16,11 +16,15 @@ const SANITIZE_BLACKLIST = new Set([
   'unauthorized',
 ]);
 
-export type RequestOptions = Omit<RequestInit, 'method' | 'body' | 'headers'> & {
+const TIMEOUT_ERROR_MESSAGE = '요청 시간이 초과되었습니다. 다시 시도해 주세요.';
+
+export type RequestOptions = Omit<RequestInit, 'method' | 'body' | 'headers' | 'signal'> & {
   method?: string;
   body?: unknown;
   headers?: HeadersInit;
   idempotencyKey?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type HttpError = Error & { status?: number; payload?: unknown };
@@ -199,8 +203,18 @@ function createHttpError(message: string, status: number, payload: unknown): Htt
 
 export async function request<T = unknown>(
   path: string,
-  { method = 'GET', body, headers = {}, idempotencyKey, ...rest }: RequestOptions = {},
+  options: RequestOptions = {},
 ): Promise<T> {
+  const {
+    method = 'GET',
+    body,
+    headers = {},
+    idempotencyKey,
+    signal,
+    timeoutMs,
+    ...rest
+  } = options;
+
   const hasBody = body !== undefined;
   const finalHeaders = buildHeaders(headers, hasBody);
 
@@ -212,10 +226,63 @@ export async function request<T = unknown>(
     finalHeaders.set('idempotency-key', idempotencyKey);
   }
 
+  const controller = new AbortController();
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let abortListener: (() => void) | null = null;
+  let abortedByTimeout = false;
+
+  const abortWithReason = (reason?: unknown) => {
+    if (controller.signal.aborted) {
+      return;
+    }
+
+    if (reason !== undefined) {
+      try {
+        controller.abort(reason);
+        return;
+      } catch {
+        // Older environments may not support abort reasons; fall back to abort without one.
+      }
+    }
+
+    controller.abort();
+  };
+
+  if (signal) {
+    const extractReason = () => (signal as AbortSignal & { reason?: unknown }).reason;
+    if (signal.aborted) {
+      abortWithReason(extractReason());
+    } else {
+      abortListener = () => {
+        abortWithReason(extractReason());
+      };
+      signal.addEventListener('abort', abortListener);
+    }
+  }
+
+  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+    timeoutHandle = setTimeout(() => {
+      abortedByTimeout = true;
+      abortWithReason();
+    }, timeoutMs);
+  }
+
+  const cleanupAbortEffects = () => {
+    if (abortListener && signal) {
+      signal.removeEventListener('abort', abortListener);
+      abortListener = null;
+    }
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+    }
+  };
+
   const init: RequestInit = {
     ...rest,
     method,
     headers: finalHeaders,
+    signal: controller.signal,
   };
 
   if (hasBody) {
@@ -226,10 +293,23 @@ export async function request<T = unknown>(
   try {
     response = await fetch(resolveUrl(path), init);
   } catch (error) {
+    cleanupAbortEffects();
+    const errorName = (error as { name?: string })?.name;
+    const isAbortError =
+      (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') ||
+      errorName === 'AbortError';
+    if (isAbortError) {
+      const message = abortedByTimeout ? TIMEOUT_ERROR_MESSAGE : DEFAULT_ERROR_MESSAGE;
+      const abortError = createHttpError(message, 0, undefined);
+      (abortError as Error & { cause?: unknown }).cause = error;
+      throw abortError;
+    }
     const networkError = createHttpError(DEFAULT_ERROR_MESSAGE, 0, undefined);
     (networkError as Error & { cause?: unknown }).cause = error;
     throw networkError;
   }
+
+  cleanupAbortEffects();
 
   const status = response.status;
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';

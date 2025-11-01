@@ -399,7 +399,9 @@ const WarehouseTransferPanel: React.FC<WarehouseTransferPanelProps> = ({
     [ensureTransferReady, runTransfer],
   );
   const moveSelected = React.useCallback(async () => {
-    const entries = Object.entries(selectedQty).filter(([, qty]) => qty > 0);
+    const entries = (Object.entries(selectedQty) as Array<[string, number]>).filter(
+      ([, qty]) => Number.isFinite(qty) && qty > 0,
+    );
     if (entries.length === 0) {
       showToast('Add items to the selection list first.', { tone: 'info' });
       return;

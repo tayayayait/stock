@@ -14,10 +14,23 @@ export interface CsvPreviewError {
   messages: string[];
 }
 
+export type CsvColumnStatus = 'matched' | 'duplicate' | 'unknown';
+
+export interface CsvColumnMapping {
+  original: string;
+  normalized: string;
+  canonical: string | null;
+  status: CsvColumnStatus;
+  duplicateOf?: string;
+}
+
 export interface CsvPreviewResponse {
   previewId: string;
   type: CsvUploadType;
   columns: string[];
+  originalColumns?: string[];
+  columnMappings?: CsvColumnMapping[];
+  warnings?: string[];
   summary: CsvPreviewSummary;
   errors: CsvPreviewError[];
 }

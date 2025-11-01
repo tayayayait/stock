@@ -1,8 +1,9 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createEmptyProduct,
   DEFAULT_UNIT,
   normalizeProduct,
+  normalizeSku,
   type InventoryRisk,
   type Product,
   type ProductInventoryEntry,
@@ -42,7 +43,14 @@ import ProductForm from './components/ProductForm';
 import ProductDetailPanel from './components/ProductDetailPanel';
 import InventoryOverviewPage from './components/InventoryOverviewPage';
 import { subscribeInventoryRefresh } from '../../utils/inventoryEvents';
-import { savePolicies, type PolicyDraft } from '../../../services/policies';
+import {
+  savePolicies,
+  fetchPolicies,
+  requestForecastRecommendation,
+  type PolicyDraft,
+  type ForecastRecommendationResult,
+  type ForecastRecommendationPayload,
+} from '../../../services/policies';
 
 interface ForecastRow {
   date: string;
@@ -65,7 +73,95 @@ interface ForecastStateEntry {
   error?: string;
 }
 
+interface ForecastPageProps {
+  skus: Product[];
+  promoExclude: boolean;
+  setPromoExclude: (value: boolean) => void;
+  forecastCache: Record<string, ForecastResponse>;
+  forecastStatusBySku: Record<string, ForecastStateEntry>;
+}
+
 export interface PolicyRow extends PolicyDraft {}
+
+const POLICY_STORAGE_KEY = 'stock-console:policy-drafts';
+
+const sanitizePolicyDraftList = (value: unknown): PolicyRow[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+
+      const record = entry as Partial<PolicyRow>;
+      if (typeof record.sku !== 'string' || !record.sku.trim()) {
+        return null;
+      }
+
+      const normalizeNumber = (input: unknown): number | null => {
+        if (typeof input !== 'number' || !Number.isFinite(input)) {
+          return null;
+        }
+        const rounded = Math.max(0, Math.round(input));
+        return Number.isFinite(rounded) ? rounded : null;
+      };
+
+      const normalizePercent = (input: unknown): number | null => {
+        if (typeof input !== 'number' || !Number.isFinite(input)) {
+          return null;
+        }
+        const clamped = Math.max(50, Math.min(99.9, input));
+        return Number.isFinite(clamped) ? clamped : null;
+      };
+
+      return {
+        sku: normalizeSku(record.sku),
+        forecastDemand: normalizeNumber(record.forecastDemand ?? null),
+        demandStdDev: normalizeNumber(record.demandStdDev ?? null),
+        leadTimeDays: normalizeNumber(record.leadTimeDays ?? null),
+        serviceLevelPercent: normalizePercent(record.serviceLevelPercent ?? null),
+      } satisfies PolicyRow;
+    })
+    .filter((entry): entry is PolicyRow => entry !== null);
+};
+
+const readPolicyDraftBackup = (): PolicyRow[] => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(POLICY_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    return sanitizePolicyDraftList(JSON.parse(raw));
+  } catch {
+    return [];
+  }
+};
+
+const writePolicyDraftBackup = (rows: PolicyRow[]) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    if (rows.length === 0) {
+      window.localStorage.removeItem(POLICY_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(POLICY_STORAGE_KEY, JSON.stringify(rows));
+  } catch {
+    // Ignore quota errors or unavailable storage
+  }
+};
+
+const normalizePolicyRow = (row: PolicyRow): PolicyRow => ({
+  ...row,
+  sku: normalizeSku(row.sku),
+});
 
 interface KpiSummary {
   opening: number;
@@ -634,18 +730,22 @@ const matchesInventoryScope = (row: Product, scope: InventoryScope): boolean => 
   return summarizeInventoryForScope(row, scope).entries.length > 0;
 };
 
-const RISK_ORDER: InventoryRisk[] = ['결품위험', '정상', '과잉'];
+const RISK_STOCKOUT: InventoryRisk = '결품위형';
+const RISK_NORMAL: InventoryRisk = '정상';
+const RISK_OVERSTOCK: InventoryRisk = '과잉';
+
+const RISK_ORDER: InventoryRisk[] = [RISK_STOCKOUT, RISK_NORMAL, RISK_OVERSTOCK];
 
 const riskPillPalette: Record<InventoryRisk, { active: string; outline: string }> = {
-  결품위험: {
+  [RISK_STOCKOUT]: {
     active: 'bg-red-50 text-red-700 border-red-200',
     outline: 'border-red-200 text-red-600 hover:bg-red-50/40',
   },
-  정상: {
+  [RISK_NORMAL]: {
     active: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     outline: 'border-emerald-200 text-emerald-600 hover:bg-emerald-50/40',
   },
-  과잉: {
+  [RISK_OVERSTOCK]: {
     active: 'bg-amber-50 text-amber-700 border-amber-200',
     outline: 'border-amber-200 text-amber-600 hover:bg-amber-50/40',
   },
@@ -743,7 +843,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({
   );
 
   const { total, active, inactive, riskCounts, categories, grades } = useMemo(() => {
-    const riskBase: Record<InventoryRisk, number> = { 정상: 0, 결품위험: 0, 과잉: 0 };
+    const riskBase: Record<InventoryRisk, number> = { [RISK_NORMAL]: 0, [RISK_STOCKOUT]: 0, [RISK_OVERSTOCK]: 0 };
     let activeCount = 0;
     const categoryMap = new Map<string, number>();
     const gradeMap = new Map<string, number>();
@@ -1128,7 +1228,7 @@ const createPolicyFromProduct = (product: Product, options: CreatePolicyOptions 
       : POLICY_DEFAULT_SERVICE_LEVEL;
 
   return {
-    sku: product.sku,
+    sku: normalizeSku(product.sku),
     forecastDemand,
     demandStdDev,
     leadTimeDays,
@@ -1138,9 +1238,16 @@ const createPolicyFromProduct = (product: Product, options: CreatePolicyOptions 
 
 interface PoliciesPageProps {
   skus: Product[];
+  allProducts: Product[];
   policyRows: PolicyRow[];
   setPolicyRows: React.Dispatch<React.SetStateAction<PolicyRow[]>>;
   forecastCache: Record<string, ForecastResponse>;
+  loading?: boolean;
+  loadError?: string | null;
+  onReload?: () => void;
+  persistedManualSkus?: string[];
+  ready?: boolean;
+  onPersistedSkusChange?: (skus: string[]) => void;
 }
 
 interface PolicyCreateDialogProps {
@@ -1165,7 +1272,7 @@ const PolicyCreateDialog: React.FC<PolicyCreateDialogProps> = ({
     const term = keyword.trim().toLowerCase();
 
     return products
-      .filter((product) => !existingSkus.has(product.sku))
+      .filter((product) => !existingSkus.has(normalizeSku(product.sku)))
       .filter((product) => {
         if (!term) {
           return true;
@@ -1184,7 +1291,10 @@ const PolicyCreateDialog: React.FC<PolicyCreateDialogProps> = ({
     }
 
     setCandidateSku((prev) => {
-      if (prev && availableProducts.some((product) => product.sku === prev)) {
+      if (
+        prev &&
+        availableProducts.some((product) => normalizeSku(product.sku) === normalizeSku(prev))
+      ) {
         return prev;
       }
       return availableProducts[0]?.sku ?? '';
@@ -1198,7 +1308,9 @@ const PolicyCreateDialog: React.FC<PolicyCreateDialogProps> = ({
         return;
       }
 
-      const product = availableProducts.find((item) => item.sku === candidateSku);
+      const product = availableProducts.find(
+        (item) => normalizeSku(item.sku) === normalizeSku(candidateSku),
+      );
       if (!product) {
         return;
       }
@@ -1306,13 +1418,25 @@ interface PolicyEditDialogProps {
     leadTimeDays: number | null;
     serviceLevelPercent: number | null;
   }) => void;
+  onRecommend?: (sku: string) => Promise<ForecastRecommendationResult>;
 }
 
-const PolicyEditDialog: React.FC<PolicyEditDialogProps> = ({ open, sku, productName, value, onClose, onSubmit }) => {
+const PolicyEditDialog: React.FC<PolicyEditDialogProps> = ({
+  open,
+  sku,
+  productName,
+  value,
+  onClose,
+  onSubmit,
+  onRecommend,
+}) => {
   const [demand, setDemand] = useState<string>(value.forecastDemand?.toString() ?? '');
   const [std, setStd] = useState<string>(value.demandStdDev?.toString() ?? '');
   const [lead, setLead] = useState<string>(value.leadTimeDays?.toString() ?? '');
   const [service, setService] = useState<string>(value.serviceLevelPercent?.toString() ?? '');
+  const [recommendation, setRecommendation] = useState<ForecastRecommendationResult | null>(null);
+  const [recommendationError, setRecommendationError] = useState<string | null>(null);
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -1322,6 +1446,9 @@ const PolicyEditDialog: React.FC<PolicyEditDialogProps> = ({ open, sku, productN
     setStd(value.demandStdDev?.toString() ?? '');
     setLead(value.leadTimeDays?.toString() ?? '');
     setService(value.serviceLevelPercent?.toString() ?? '');
+    setRecommendation(null);
+    setRecommendationError(null);
+    setRecommendationLoading(false);
   }, [open, value.forecastDemand, value.demandStdDev, value.leadTimeDays, value.serviceLevelPercent]);
 
   const toNonNegativeInt = (text: string): number | null => {
@@ -1344,6 +1471,44 @@ const PolicyEditDialog: React.FC<PolicyEditDialogProps> = ({ open, sku, productN
     const p = toServicePercent(service);
     return Number.isFinite(p as number) ? serviceLevelPercentageToZ(p as number) : null;
   }, [service]);
+
+  const handleRecommendClick = useCallback(async () => {
+    if (!onRecommend) {
+      return;
+    }
+    setRecommendationError(null);
+    setRecommendation(null);
+    setRecommendationLoading(true);
+    try {
+      const result = await onRecommend(sku);
+      setRecommendation(result);
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message ? error.message : '정책을 불러오지 못했습니다.';
+      setRecommendationError(message);
+    } finally {
+      setRecommendationLoading(false);
+    }
+  }, [onRecommend, sku]);
+
+  const handleApplyRecommendation = useCallback(() => {
+    if (!recommendation) {
+      return;
+    }
+    if (recommendation.forecastDemand !== null) {
+      setDemand(recommendation.forecastDemand.toString());
+    }
+    if (recommendation.demandStdDev !== null) {
+      setStd(recommendation.demandStdDev.toString());
+    }
+    if (recommendation.leadTimeDays !== null) {
+      setLead(recommendation.leadTimeDays.toString());
+    }
+    if (recommendation.serviceLevelPercent !== null) {
+      const formatted = Math.round(recommendation.serviceLevelPercent * 10) / 10;
+      setService(formatted.toString());
+    }
+  }, [recommendation]);
 
   if (!open) return null;
 
@@ -1370,40 +1535,44 @@ const PolicyEditDialog: React.FC<PolicyEditDialogProps> = ({ open, sku, productN
           className="space-y-3"
         >
           <div>
-            <label className="text-sm font-medium text-slate-700">예측 수요량 (EA/일)</label>
+            <label className="text-sm font-medium text-slate-700" htmlFor="policy-edit-forecast-demand">예측 수요량 (EA/일)</label>
             <input
               className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
               inputMode="numeric"
+              id="policy-edit-forecast-demand"
               value={demand}
               onChange={(e) => setDemand(e.target.value)}
               placeholder="예: 320"
             />
           </div>
           <div>
-            <label className="text-sm font-medium text-slate-700">수요 표준편차 (σ)</label>
+            <label className="text-sm font-medium text-slate-700" htmlFor="policy-edit-demand-std">수요 표준편차 (σ)</label>
             <input
               className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
               inputMode="numeric"
+              id="policy-edit-demand-std"
               value={std}
               onChange={(e) => setStd(e.target.value)}
               placeholder="예: 48"
             />
           </div>
           <div>
-            <label className="text-sm font-medium text-slate-700">리드타임 (L, 일)</label>
+            <label className="text-sm font-medium text-slate-700" htmlFor="policy-edit-lead-time">리드타임 (L, 일)</label>
             <input
               className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
               inputMode="numeric"
+              id="policy-edit-lead-time"
               value={lead}
               onChange={(e) => setLead(e.target.value)}
               placeholder="예: 10"
             />
           </div>
           <div>
-            <label className="text-sm font-medium text-slate-700">서비스 수준 (%)</label>
+            <label className="text-sm font-medium text-slate-700" htmlFor="policy-edit-service-level">서비스 수준 (%)</label>
             <div className="mt-1 flex items-center gap-2">
               <select
                 className="w-36 rounded-xl border border-slate-200 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                id="policy-edit-service-level"
                 value={service}
                 onChange={(e) => setService(e.target.value)}
               >
@@ -1414,9 +1583,48 @@ const PolicyEditDialog: React.FC<PolicyEditDialogProps> = ({ open, sku, productN
                   </option>
                 ))}
               </select>
-              <div className="text-xs text-slate-500">{zValue !== null ? `Z ≈ ${zValue.toFixed(2)}` : 'Z -'}</div>
+              <div className="text-xs text-slate-500">{zValue !== null ? `Z ? ${zValue.toFixed(2)}` : 'Z -'}</div>
             </div>
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 shadow-sm transition hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={handleRecommendClick}
+              disabled={recommendationLoading || !onRecommend}
+            >
+              {recommendationLoading ? '산출 중...' : '추천값 자동산출'}
+            </button>
+            {recommendation && (
+              <button
+                type="button"
+                className="rounded-xl bg-indigo-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-500"
+                onClick={handleApplyRecommendation}
+              >
+                추천값 적용
+              </button>
+            )}
+          </div>
+
+          {recommendationError && (
+            <p className="mt-2 text-xs text-rose-500">{recommendationError}</p>
+          )}
+
+          {recommendation && (
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+              <p>예상 일수요: {recommendation.forecastDemand ?? '-'} EA/일</p>
+              <p>수요 표준편차: {recommendation.demandStdDev ?? '-'} EA/일</p>
+              <p>리드타임: {recommendation.leadTimeDays ?? '-'} 일</p>
+              <p>서비스 수준: {recommendation.serviceLevelPercent ?? '-'}%</p>
+              {recommendation.notes.length > 0 && (
+                <ul className="mt-2 list-disc pl-4 text-[11px] text-slate-500">
+                  {recommendation.notes.map((note, index) => (
+                    <li key={`${sku}-recommendation-note-${index}`}>{note}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
 
           <div className="pt-2 text-right">
             <button
@@ -1439,7 +1647,19 @@ const PolicyEditDialog: React.FC<PolicyEditDialogProps> = ({ open, sku, productN
   );
 };
 
-const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicyRows, forecastCache }) => {
+const PoliciesPage: React.FC<PoliciesPageProps> = ({
+  skus,
+  allProducts,
+  policyRows,
+  setPolicyRows,
+  forecastCache,
+  loading = false,
+  loadError = null,
+  onReload,
+  persistedManualSkus = [],
+  ready = false,
+  onPersistedSkusChange,
+}) => {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1448,36 +1668,121 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
   const [editOpen, setEditOpen] = useState(false);
   const [editSku, setEditSku] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!persistedManualSkus || persistedManualSkus.length === 0) {
+      return;
+    }
+
+    persistedManualSkus.forEach((sku) => {
+      manualOverrideRef.current.add(normalizeSku(sku));
+    });
+  }, [persistedManualSkus]);
+
   const markManualOverride = useCallback((sku: string) => {
-    manualOverrideRef.current.add(sku);
+    manualOverrideRef.current.add(normalizeSku(sku));
   }, []);
+
+  const showInitialLoading = !ready && loading;
+  const showRefreshing = ready && loading;
+  const canInteract = ready || policyRows.length > 0;
 
   const productBySku = useMemo(() => {
     const map = new Map<string, Product>();
-    skus.forEach((row) => {
-      map.set(row.sku, row);
+    allProducts.forEach((row) => {
+      const normalized = normalizeSku(row.sku);
+      map.set(normalized, row);
+      if (normalized !== row.sku) {
+        map.set(row.sku, row);
+      }
     });
     return map;
-  }, [skus]);
+  }, [allProducts]);
 
-  const existingSkuSet = useMemo(() => new Set(policyRows.map((row) => row.sku)), [policyRows]);
-  const canAddPolicy = useMemo(
-    () => skus.some((product) => !existingSkuSet.has(product.sku)),
-    [existingSkuSet, skus],
+  const existingSkuSet = useMemo(
+    () => new Set(policyRows.map((row) => normalizeSku(row.sku))),
+    [policyRows],
   );
+  const availableSkus = useMemo(
+    () => allProducts.filter((product) => !existingSkuSet.has(normalizeSku(product.sku))),
+    [allProducts, existingSkuSet],
+  );
+  const canAddPolicy = availableSkus.length > 0;
+  const canTriggerPolicyCreate = !saving;
 
   const filteredRows = useMemo(() => {
-    const registeredRows = policyRows.filter((row) => productBySku.has(row.sku));
     const term = search.trim().toLowerCase();
     if (!term) {
-      return registeredRows;
+      return policyRows;
     }
-    return registeredRows.filter((row) => {
-      const product = productBySku.get(row.sku);
+
+    return policyRows.filter((row) => {
+      const normalized = normalizeSku(row.sku);
+      const product = productBySku.get(normalized);
       const name = product?.name?.toLowerCase() ?? '';
-      return row.sku.toLowerCase().includes(term) || name.includes(term);
+      return normalized.toLowerCase().includes(term) || name.includes(term);
     });
   }, [policyRows, productBySku, search]);
+
+  const registeredRows = useMemo(() => {
+    if (productBySku.size === 0) {
+      return filteredRows;
+    }
+    return filteredRows.filter((row) => productBySku.has(normalizeSku(row.sku)));
+  }, [filteredRows, productBySku]);
+
+  const orphanPolicySkus = useMemo(() => {
+    if (!ready || productBySku.size === 0) {
+      return [];
+    }
+    return filteredRows
+      .filter((row) => !productBySku.has(normalizeSku(row.sku)))
+      .map((row) => row.sku);
+  }, [filteredRows, productBySku, ready]);
+
+  const handleForecastRecommendation = useCallback(
+    async (targetSku: string): Promise<ForecastRecommendationResult> => {
+      const normalized = normalizeSku(targetSku);
+      const product = productBySku.get(normalized);
+      const policy = policyRows.find((row) => normalizeSku(row.sku) === normalized);
+      const forecast = forecastCache[normalized] ?? forecastCache[targetSku];
+
+      const metrics: ForecastRecommendationPayload['metrics'] = {};
+      if (typeof product?.dailyAvg === 'number' && Number.isFinite(product.dailyAvg)) {
+        metrics.dailyAvg = product.dailyAvg;
+      }
+      if (typeof product?.dailyStd === 'number' && Number.isFinite(product.dailyStd)) {
+        metrics.dailyStd = product.dailyStd;
+      }
+      if (typeof product?.avgOutbound7d === 'number' && Number.isFinite(product.avgOutbound7d)) {
+        metrics.avgOutbound7d = product.avgOutbound7d;
+      }
+      if (typeof product?.onHand === 'number' && Number.isFinite(product.onHand)) {
+        metrics.onHand = product.onHand;
+      }
+      const leadTimeCandidate = policy?.leadTimeDays ?? forecast?.product?.leadTimeDays;
+      if (typeof leadTimeCandidate === 'number' && Number.isFinite(leadTimeCandidate)) {
+        metrics.leadTimeDays = leadTimeCandidate;
+      }
+      if (typeof policy?.serviceLevelPercent === 'number' && Number.isFinite(policy.serviceLevelPercent)) {
+        metrics.serviceLevelPercent = policy.serviceLevelPercent;
+      }
+
+      const payload: ForecastRecommendationPayload = {
+        sku: normalized,
+        name: product?.name ?? targetSku,
+        category: product?.category,
+        metrics: Object.keys(metrics).length > 0 ? metrics : undefined,
+        history: forecast?.timeline?.map((entry) => ({
+          date: entry.date,
+          actual: entry.actual,
+          forecast: entry.forecast,
+        })),
+      };
+
+      return requestForecastRecommendation(payload);
+    },
+    [forecastCache, policyRows, productBySku],
+  );
 
   useEffect(() => {
     if (!forecastCache || Object.keys(forecastCache).length === 0) {
@@ -1487,16 +1792,17 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
     setPolicyRows((prev) => {
       let changed = false;
       const next = prev.map((row) => {
-        if (manualOverrideRef.current.has(row.sku)) {
+        const normalized = normalizeSku(row.sku);
+        if (manualOverrideRef.current.has(normalized)) {
           return row;
         }
 
-        const product = productBySku.get(row.sku);
+        const product = productBySku.get(normalized);
         if (!product) {
           return row;
         }
 
-        const forecast = forecastCache[row.sku];
+        const forecast = forecastCache[normalized] ?? forecastCache[row.sku];
         if (!forecast) {
           return row;
         }
@@ -1540,36 +1846,77 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
 
   const handleServiceLevelChange = useCallback(
     (sku: string, nextValue: string) => {
+      if (!canInteract) {
+        return;
+      }
+
       const parsed = Number.parseFloat(nextValue);
       if (!Number.isFinite(parsed)) {
         return;
       }
 
+      const normalizedSku = normalizeSku(sku);
       setPolicyRows((prev) =>
-        prev.map((row) => (row.sku === sku ? { ...row, serviceLevelPercent: parsed } : row)),
+        prev.map((row) =>
+          normalizeSku(row.sku) === normalizedSku ? { ...row, serviceLevelPercent: parsed } : row,
+        ),
       );
       markManualOverride(sku);
     },
-    [markManualOverride, setPolicyRows],
+    [canInteract, markManualOverride, setPolicyRows],
   );
 
   const handleEditPolicy = useCallback(
     (sku: string) => {
-      const targetRow = policyRows.find((row) => row.sku === sku);
+      if (!canInteract) {
+        return;
+      }
+      const normalizedSku = normalizeSku(sku);
+      const targetRow = policyRows.find((row) => normalizeSku(row.sku) === normalizedSku);
       if (!targetRow) {
         setStatus({ type: 'error', text: '선택한 SKU 정책이 존재하지 않습니다.' });
         return;
       }
-      setEditSku(sku);
+      setEditSku(targetRow.sku);
       setEditOpen(true);
     },
-    [policyRows, setStatus],
+    [canInteract, policyRows, setStatus],
+  );
+
+  const handleDeletePolicy = useCallback(
+    (sku: string) => {
+      if (!canInteract) {
+        return;
+      }
+
+      const normalizedSku = normalizeSku(sku);
+      const product = productBySku.get(normalizedSku);
+      const confirmMessage = product
+        ? `'${product.name}' 정책을 삭제하시겠어요? 저장을 완료해야 영구 삭제됩니다.`
+        : `${sku} 정책을 삭제하시겠어요? 저장을 완료해야 영구 삭제됩니다.`;
+
+      if (typeof window !== 'undefined' && !window.confirm(confirmMessage)) {
+        return;
+      }
+
+      setPolicyRows((prev) =>
+        prev
+          .filter((row) => normalizeSku(row.sku) !== normalizedSku)
+          .map(normalizePolicyRow),
+      );
+      manualOverrideRef.current.delete(normalizedSku);
+      setStatus({ type: 'success', text: `${sku} 정책이 삭제 목록에 추가되었습니다.` });
+    },
+    [canInteract, productBySku, setPolicyRows, setStatus],
   );
 
   const openAddPolicyDialog = useCallback(() => {
+    if (!canTriggerPolicyCreate) {
+      return;
+    }
     setStatus(null);
     setAddDialogOpen(true);
-  }, []);
+  }, [canTriggerPolicyCreate]);
 
   const closeAddPolicyDialog = useCallback(() => {
     setAddDialogOpen(false);
@@ -1577,38 +1924,100 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
 
   const handlePolicyCreate = useCallback(
     (product: Product) => {
+      if (saving) {
+        return;
+      }
+
+      const normalizedSku = normalizeSku(product.sku);
       setPolicyRows((prev) => {
-        if (prev.some((row) => row.sku === product.sku)) {
+        if (prev.some((row) => normalizeSku(row.sku) === normalizedSku)) {
           return prev;
         }
 
-        const existingTemplate = INITIAL_POLICIES.find((row) => row.sku === product.sku);
+        const existingTemplate = INITIAL_POLICIES.find(
+          (row) => normalizeSku(row.sku) === normalizedSku,
+        );
         const draft = existingTemplate
           ? { ...existingTemplate }
-          : createPolicyFromProduct(product, { forecast: forecastCache[product.sku] });
+          : createPolicyFromProduct(product, {
+              forecast: forecastCache[normalizedSku] ?? forecastCache[product.sku],
+            });
 
-        const next = [...prev, draft];
+        const normalizedDraft: PolicyRow = { ...draft, sku: normalizeSku(draft.sku) };
+        const next = [...prev, normalizedDraft];
         next.sort((a, b) => a.sku.localeCompare(b.sku));
         return next;
       });
 
-      manualOverrideRef.current.delete(product.sku);
-      setStatus({ type: 'success', text: `${product.sku} 정책을 추가했습니다.` });
+      manualOverrideRef.current.delete(normalizedSku);
+      setStatus({ type: 'success', text: `${normalizedSku} 정책을 추가했습니다.` });
     },
-    [forecastCache, setPolicyRows, setStatus],
+    [forecastCache, saving, setPolicyRows, setStatus],
   );
 
   const handleSavePolicies = useCallback(async () => {
-    if (saving) {
+    if (saving || !canInteract) {
       return;
     }
 
     setSaving(true);
     setStatus(null);
+    const normalizedRows = policyRows.map(normalizePolicyRow);
+    const sortedRows = [...normalizedRows].sort((a, b) => a.sku.localeCompare(b.sku));
+    const missingProductSkus =
+      ready && productBySku.size > 0
+        ? sortedRows.filter((row) => !productBySku.has(row.sku)).map((row) => row.sku)
+        : [];
+
+    writePolicyDraftBackup(sortedRows);
+
+    setPolicyRows(sortedRows);
 
     try {
-      await savePolicies(policyRows);
-      setStatus({ type: 'success', text: '정책을 저장했습니다.' });
+      await savePolicies(sortedRows);
+      try {
+        const refreshed = await fetchPolicies();
+        const sorted = [...refreshed]
+          .map((row) => ({ ...row, sku: normalizeSku(row.sku) }))
+          .sort((a, b) => a.sku.localeCompare(b.sku));
+
+        let resolvedRows: PolicyRow[] | null = null;
+        setPolicyRows((prev) => {
+          if (sorted.length === 0) {
+            resolvedRows = prev;
+            return prev;
+          }
+
+          const remoteMap = new Map(sorted.map((row) => [normalizeSku(row.sku), row]));
+          const manualRows = prev.filter(
+            (row) => !remoteMap.has(normalizeSku(row.sku)),
+          );
+          if (manualRows.length === 0) {
+            resolvedRows = sorted;
+            return sorted;
+          }
+
+          const merged = [...sorted, ...manualRows.map((row) => ({ ...row, sku: normalizeSku(row.sku) }))];
+          merged.sort((a, b) => a.sku.localeCompare(b.sku));
+          resolvedRows = merged;
+          return merged;
+        });
+
+        const effectiveRows = resolvedRows ?? policyRows;
+        onPersistedSkusChange?.(
+          sorted.length > 0 ? sorted.map((row) => row.sku) : effectiveRows.map((row) => row.sku),
+        );
+      } catch {
+        onPersistedSkusChange?.(sortedRows.map((row) => row.sku));
+      }
+      setStatus({
+        type: 'success',
+        text: !ready
+          ? 'Policies saved. Product data is still loading; the table will refresh once products finish loading.'
+          : missingProductSkus.length > 0
+              ? ('Policies saved. ' + missingProductSkus.length.toLocaleString() + ' policies reference products that are not in the current catalog. Review those entries before finalizing.')
+              : 'Policies saved.',
+      });
     } catch (error) {
       const message =
         error instanceof Error && error.message
@@ -1618,7 +2027,7 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
     } finally {
       setSaving(false);
     }
-  }, [policyRows, saving]);
+  }, [canInteract, onPersistedSkusChange, policyRows, productBySku, ready, saving]);
 
   return (
     <div className="space-y-6 p-6">
@@ -1648,13 +2057,48 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
                 type="button"
                 className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-300"
                 onClick={openAddPolicyDialog}
-                disabled={!canAddPolicy}
+                disabled={!canTriggerPolicyCreate}
               >
                 + 정책 추가
               </button>
             </div>
+            {showRefreshing && (
+              <p className="text-xs text-slate-400">정책 데이터를 새로고치는 중입니다...</p>
+            )}
+            {ready && allProducts.length === 0 && (
+              <p className="text-xs text-slate-500">
+                표시할 품목 정보를 불러오지 못했습니다. 품목 관리 데이터를 확인한 후 다시 시도해 주세요.
+              </p>
+            )}
+            {ready && allProducts.length > 0 && !canAddPolicy && (
+              <p className="text-xs text-slate-500">
+                모든 품목에 정책이 등록되어 있습니다. 정책을 수정해 보세요.
+              </p>
+            )}
           </div>
         </div>
+
+        {showInitialLoading && (
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            정책을 불러오는 중입니다...
+          </div>
+        )}
+
+        {loadError && !showInitialLoading && (
+          <div className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            <span>{loadError}</span>
+            {onReload && (
+              <button
+                type="button"
+                className="rounded-lg border border-rose-200 px-3 py-1 text-xs font-medium text-rose-700 transition hover:border-rose-300 hover:bg-rose-100"
+                onClick={onReload}
+                disabled={loading}
+              >
+                다시 시도
+              </button>
+            )}
+          </div>
+        )}
 
         {status && (
           <div
@@ -1665,6 +2109,12 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
             }`}
           >
             {status.text}
+          </div>
+        )}
+
+        {orphanPolicySkus.length > 0 && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            등록된 품목이 없는 정책 {orphanPolicySkus.length.toLocaleString()}건을 숨겼습니다. '정책 저장'을 눌러 정리하면 목록에서 완전히 제거됩니다.
           </div>
         )}
 
@@ -1682,15 +2132,16 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
               </tr>
             </thead>
             <tbody>
-              {filteredRows.length === 0 ? (
+              {registeredRows.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-slate-500">
                     조건에 맞는 정책이 없습니다.
                   </td>
                 </tr>
               ) : (
-                filteredRows.map((row) => {
-                  const product = productBySku.get(row.sku);
+                registeredRows.map((row) => {
+                  const normalizedSku = normalizeSku(row.sku);
+                  const product = productBySku.get(normalizedSku);
 
                   return (
                     <tr key={row.sku} className="border-b border-slate-100 last:border-transparent">
@@ -1716,6 +2167,7 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
                             value={
                               row.serviceLevelPercent != null ? row.serviceLevelPercent.toString() : ''
                             }
+                            disabled={!canInteract}
                             onChange={(event) => handleServiceLevelChange(row.sku, event.target.value)}
                           >
                             {row.serviceLevelPercent == null && <option value="">선택</option>}
@@ -1727,14 +2179,25 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
                           </select>
                         </div>
                       </td>
-                      <td className="px-3 py-3 align-top text-right">
-                        <button
-                          type="button"
-                          className="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
-                          onClick={() => handleEditPolicy(row.sku)}
-                        >
-                          수정
-                        </button>
+                      <td className="px-3 py-3 align-top">
+                        <div className="flex justify-end gap-1 text-xs">
+                          <button
+                            type="button"
+                            className="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
+                            onClick={() => handleEditPolicy(row.sku)}
+                            disabled={!canInteract || saving}
+                          >
+                            수정
+                          </button>
+                          <button
+                            type="button"
+                            className="inline-flex items-center justify-center rounded-lg border border-rose-200 px-3 py-1 text-xs font-medium text-rose-600 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700"
+                            onClick={() => handleDeletePolicy(row.sku)}
+                            disabled={!canInteract || saving}
+                          >
+                            삭제
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1748,7 +2211,7 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
             type="button"
             className="inline-flex items-center justify-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-300"
             onClick={handleSavePolicies}
-            disabled={saving}
+            disabled={saving || !canInteract}
           >
             {saving ? '저장 중...' : '정책 저장'}
           </button>
@@ -1757,7 +2220,7 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
       <PolicyCreateDialog
         open={addDialogOpen}
         onClose={closeAddPolicyDialog}
-        products={skus}
+        products={allProducts}
         existingSkus={existingSkuSet}
         onSubmit={handlePolicyCreate}
       />
@@ -1765,9 +2228,9 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
         <PolicyEditDialog
           open={editOpen}
           sku={editSku}
-          productName={productBySku.get(editSku)?.name}
+          productName={productBySku.get(normalizeSku(editSku))?.name}
           value={(() => {
-            const row = policyRows.find((r) => r.sku === editSku)!;
+            const row = policyRows.find((r) => normalizeSku(r.sku) === normalizeSku(editSku))!;
             return {
               forecastDemand: row.forecastDemand ?? null,
               demandStdDev: row.demandStdDev ?? null,
@@ -1799,6 +2262,7 @@ const PoliciesPage: React.FC<PoliciesPageProps> = ({ skus, policyRows, setPolicy
             setEditOpen(false);
             setEditSku(null);
           }}
+          onRecommend={handleForecastRecommendation}
         />
       )}
     </div>
@@ -1816,16 +2280,24 @@ const DeepflowDashboard: React.FC = () => {
     | 'categories'
   >('inventory');
   const mountedRef = useRef(true);
+  const initialPolicyRows = useMemo(() => readPolicyDraftBackup(), []);
   const [warehousePanelRefreshToken, setWarehousePanelRefreshToken] = useState(0);
   const requestWarehousePanelReload = useCallback(
     () => setWarehousePanelRefreshToken((value) => value + 1),
     [],
   );
   const [skus, setSkus] = useState<Product[]>([]);
+  const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [selected, setSelected] = useState<Product | null>(null);
   const selectedRef = useRef<Product | null>(null);
   const [promoExclude, setPromoExclude] = useState(true);
-  const [policyRows, setPolicyRows] = useState<PolicyRow[]>(INITIAL_POLICIES);
+  const [policyRows, setPolicyRows] = useState<PolicyRow[]>(initialPolicyRows);
+  const [policyLoading, setPolicyLoading] = useState(false);
+  const [policyLoadError, setPolicyLoadError] = useState<string | null>(null);
+  const [policyReady, setPolicyReady] = useState(false);
+  const [persistedPolicySkus, setPersistedPolicySkus] = useState<string[]>(() =>
+    initialPolicyRows.map((row) => row.sku),
+  );
   const [forecastState, setForecastState] = useState<Record<number, ForecastStateEntry>>({});
   const [productDrawer, setProductDrawer] = useState<ProductDrawerState | null>(null);
   const [productQuery, setProductQuery] = useState('');
@@ -1844,6 +2316,108 @@ const DeepflowDashboard: React.FC = () => {
       mountedRef.current = false;
     };
   }, []);
+
+  const loadPolicies = useCallback(async () => {
+    if (!mountedRef.current) {
+      return;
+    }
+
+    setPolicyLoading(true);
+    setPolicyLoadError(null);
+
+    try {
+      const remotePolicies = await fetchPolicies();
+      if (!mountedRef.current) {
+        return;
+      }
+
+      const normalizedRemote = remotePolicies.map((row) => ({
+        ...row,
+        sku: normalizeSku(row.sku),
+      }));
+      const sorted = [...normalizedRemote].sort((a, b) => a.sku.localeCompare(b.sku));
+      const remoteSkuSet = new Set(sorted.map((row) => row.sku));
+      const backupRows = readPolicyDraftBackup().map((row) => ({
+        ...row,
+        sku: normalizeSku(row.sku),
+      }));
+      const backupAdditional = backupRows.filter((row) => !remoteSkuSet.has(row.sku));
+      const baseRows = sorted.length > 0 ? [...sorted, ...backupAdditional] : [...backupRows];
+      if (baseRows.length > 1) {
+        baseRows.sort((a, b) => a.sku.localeCompare(b.sku));
+      }
+
+      setPolicyRows((prev) => {
+        if (prev.length === 0) {
+          return baseRows;
+        }
+
+        if (baseRows.length === 0) {
+          return prev.map(normalizePolicyRow);
+        }
+
+        const manualRows = prev.filter((row) => !remoteSkuSet.has(normalizeSku(row.sku)));
+        if (manualRows.length === 0) {
+          return baseRows;
+        }
+
+        const merged = [
+          ...baseRows,
+          ...manualRows.map((row) => ({ ...row, sku: normalizeSku(row.sku) })),
+        ];
+        const unique = new Map<string, PolicyRow>();
+        merged.forEach((row) => {
+          unique.set(normalizeSku(row.sku), { ...row, sku: normalizeSku(row.sku) });
+        });
+        const next = Array.from(unique.values());
+        next.sort((a, b) => a.sku.localeCompare(b.sku));
+        return next;
+      });
+      setPersistedPolicySkus(
+        sorted.length > 0 ? sorted.map((row) => row.sku) : backupRows.map((row) => row.sku),
+      );
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+      const message =
+        error instanceof Error && error.message ? error.message : '정책을 불러오지 못했습니다.';
+      setPolicyLoadError(message);
+      const backupRows = readPolicyDraftBackup().map((row) => ({
+        ...row,
+        sku: normalizeSku(row.sku),
+      }));
+      if (backupRows.length > 0) {
+        setPolicyRows((prev) => (prev.length === 0 ? backupRows : prev.map(normalizePolicyRow)));
+        setPersistedPolicySkus(backupRows.map((row) => row.sku));
+      } else {
+        setPersistedPolicySkus([]);
+      }
+    } finally {
+      if (mountedRef.current) {
+        setPolicyLoading(false);
+        setPolicyReady(true);
+      }
+    }
+  }, [setPolicyRows, setPersistedPolicySkus, setPolicyLoadError, setPolicyLoading, setPolicyReady]);
+
+  useEffect(() => {
+    void loadPolicies();
+  }, [loadPolicies]);
+
+  useEffect(() => {
+    if (!policyReady) {
+      return;
+    }
+    writePolicyDraftBackup(policyRows);
+  }, [policyReady, policyRows]);
+
+  const handleReloadPolicies = useCallback(() => {
+    if (policyLoading) {
+      return;
+    }
+    void loadPolicies();
+  }, [loadPolicies, policyLoading]);
 
   const triggerProductsReload = useCallback(() => {
     setProductsError(null);
@@ -1976,6 +2550,9 @@ const DeepflowDashboard: React.FC = () => {
         }
         setSkus(items);
         setProductsError(null);
+        if (!productQuery.trim()) {
+          setAllProducts(items);
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -1999,6 +2576,55 @@ const DeepflowDashboard: React.FC = () => {
       cancelled = true;
     };
   }, [productQuery, productsVersion]);
+
+  useEffect(() => {
+    if (!productQuery.trim()) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const items = await ProductService.fetchProducts();
+        if (cancelled) {
+          return;
+        }
+        setAllProducts(items);
+      } catch {
+        if (!cancelled) {
+          setAllProducts((prev) => prev);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [productQuery, productsVersion]);
+
+  useEffect(() => {
+    if (!policyReady || productsLoading) {
+      return;
+    }
+
+    const allowedSkuSet = new Set(allProducts.map((product) => normalizeSku(product.sku)));
+    // Skip reconciliation while the catalog has not loaded; otherwise transient empty fetches clear saved policies.
+    if (allowedSkuSet.size === 0) {
+      return;
+    }
+
+    setPersistedPolicySkus((prev) => {
+      if (prev.length === 0) {
+        return prev;
+      }
+
+      const next = prev.filter((sku) => allowedSkuSet.has(normalizeSku(sku)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [allProducts, policyReady, productsLoading, setPersistedPolicySkus]);
 
   useEffect(() => {
     if (!selected && skus.length > 0) {
@@ -2103,7 +2729,7 @@ const DeepflowDashboard: React.FC = () => {
   }, [skus]);
 
   const riskSummary = useMemo<RiskSummaryEntry[]>(() => {
-    const totals: Record<InventoryRisk, number> = { 정상: 0, 결품위험: 0, 과잉: 0 };
+        const totals: Record<InventoryRisk, number> = { [RISK_NORMAL]: 0, [RISK_STOCKOUT]: 0, [RISK_OVERSTOCK]: 0 };
     skus.forEach((row) => {
       totals[row.risk] += 1;
     });
@@ -2119,7 +2745,10 @@ const DeepflowDashboard: React.FC = () => {
     const map: Record<string, ForecastResponse> = {};
     (Object.values(forecastState) as ForecastStateEntry[]).forEach((entry) => {
       if (entry?.status === 'ready' && entry.data) {
-        map[entry.data.product.sku] = entry.data;
+        const key = entry.data.product.sku;
+        const normalized = normalizeSku(key);
+        map[key] = entry.data;
+        map[normalized] = entry.data;
       }
     });
     return map;
@@ -2128,10 +2757,14 @@ const DeepflowDashboard: React.FC = () => {
   const forecastStatusBySku = useMemo<Record<string, ForecastStateEntry>>(() => {
     const map: Record<string, ForecastStateEntry> = {};
     skus.forEach((row) => {
+      const normalized = normalizeSku(row.sku);
       if (row.legacyProductId > 0) {
-        map[row.sku] = forecastState[row.legacyProductId] ?? { status: 'idle' };
+        const status = forecastState[row.legacyProductId] ?? { status: 'idle' };
+        map[row.sku] = status;
+        map[normalized] = status;
       } else {
         map[row.sku] = { status: 'idle' };
+        map[normalized] = { status: 'idle' };
       }
     });
     return map;
@@ -2165,8 +2798,21 @@ const DeepflowDashboard: React.FC = () => {
 
       try {
         await ProductService.deleteProduct(row.sku);
-        setSkus((prev) => prev.filter((item) => item.sku !== row.sku));
-        setPolicyRows((prev) => prev.filter((item) => item.sku !== row.sku));
+        const normalizedSku = normalizeSku(row.sku);
+        setSkus((prev) => prev.filter((item) => normalizeSku(item.sku) !== normalizedSku));
+        let nextPolicyDrafts: PolicyRow[] = [];
+        setPolicyRows((prev) => {
+          const filtered = prev
+            .filter((item) => normalizeSku(item.sku) !== normalizedSku)
+            .map((item) => ({ ...item, sku: normalizeSku(item.sku) }));
+          nextPolicyDrafts = filtered;
+          return filtered;
+        });
+        if (nextPolicyDrafts.length === policyRows.length) {
+          nextPolicyDrafts = policyRows
+            .filter((item) => normalizeSku(item.sku) !== normalizedSku)
+            .map((item) => ({ ...item, sku: normalizeSku(item.sku) }));
+        }
         setSelected((prev) => (prev && prev.sku === row.sku ? null : prev));
         setForecastState((prev) => {
           if (!row.legacyProductId || !(row.legacyProductId in prev)) {
@@ -2181,11 +2827,19 @@ const DeepflowDashboard: React.FC = () => {
             return current;
           }
           const targetSku = current.originalSku ?? current.row.sku;
-          if (targetSku === row.sku) {
+          if (normalizeSku(targetSku) === normalizedSku) {
             return null;
           }
           return current;
         });
+        try {
+          await savePolicies(nextPolicyDrafts);
+          setPersistedPolicySkus(nextPolicyDrafts.map((entry) => entry.sku));
+          setPolicyLoadError(null);
+        } catch (error) {
+          console.error('[deepflow] policy sync failed after product deletion', error);
+          setPolicyLoadError('정책 자동 정리에 실패했습니다. 정책 저장을 다시 시도해 주세요.');
+        }
         triggerProductsReload();
       } catch (error) {
         const message =
@@ -2196,9 +2850,13 @@ const DeepflowDashboard: React.FC = () => {
     [
       setSkus,
       setPolicyRows,
+      policyRows,
       setSelected,
       setForecastState,
       setProductDrawer,
+      savePolicies,
+      setPersistedPolicySkus,
+      setPolicyLoadError,
       triggerProductsReload,
       setProductsError,
     ],
@@ -2345,6 +3003,7 @@ const DeepflowDashboard: React.FC = () => {
                   riskSummary={riskSummary}
                   forecastCache={forecastCache}
                   forecastStatusBySku={forecastStatusBySku}
+                  policies={policyRows}
                 />
               )}
 
@@ -2379,9 +3038,16 @@ const DeepflowDashboard: React.FC = () => {
               {active === 'policies' && (
                 <PoliciesPage
                   skus={skus}
+                  allProducts={allProducts}
                   policyRows={policyRows}
                   setPolicyRows={setPolicyRows}
                   forecastCache={forecastCache}
+                  loading={policyLoading}
+                  loadError={policyLoadError}
+                  onReload={handleReloadPolicies}
+                  persistedManualSkus={persistedPolicySkus}
+                  ready={policyReady}
+                  onPersistedSkusChange={setPersistedPolicySkus}
                 />
               )}
 
@@ -2411,7 +3077,7 @@ const DeepflowDashboard: React.FC = () => {
           <div className="w-[480px] h-full bg-white p-5 border-l overflow-y-auto">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold">
-                {productDrawer.mode === 'new' ? '품목 등록' : '품목 수정'} — {productDrawer.row.sku || '신규'}
+                {productDrawer.mode === 'new' ? '품목 등록' : '품목 수정'} ? {productDrawer.row.sku || '신규'}
               </h3>
               <button className="text-sm" onClick={closeProduct}>
                 닫기
@@ -2810,3 +3476,12 @@ export const __test__ = {
   zToServiceLevelPercentage,
 };
 export default DeepflowDashboard;
+
+
+
+
+
+
+
+
+

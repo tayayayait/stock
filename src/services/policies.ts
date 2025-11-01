@@ -1,4 +1,6 @@
-import { post } from './api';
+import { get, post } from './api';
+
+const POLICIES_REQUEST_TIMEOUT_MS = 15000;
 
 export interface PolicyRecommendationPatch {
   z?: number;
@@ -60,8 +62,44 @@ export interface PolicyDraft {
   serviceLevelPercent: number | null;
 }
 
+export interface ForecastRecommendationPayload {
+  sku: string;
+  name: string;
+  category?: string;
+  metrics?: {
+    dailyAvg?: number;
+    dailyStd?: number;
+    avgOutbound7d?: number;
+    onHand?: number;
+    leadTimeDays?: number;
+    serviceLevelPercent?: number;
+  };
+  history?: Array<{ date: string; actual?: number | null; forecast?: number | null }>;
+}
+
+export interface ForecastRecommendationResult {
+  forecastDemand: number | null;
+  demandStdDev: number | null;
+  leadTimeDays: number | null;
+  serviceLevelPercent: number | null;
+  notes: string[];
+  rawText?: string;
+}
+
 interface PolicyBulkSaveResponse {
   success: boolean;
+  message?: string;
+}
+
+interface ForecastRecommendationApiResponse {
+  success: boolean;
+  recommendation?: ForecastRecommendationResult;
+  error?: string;
+}
+
+interface PolicyListResponse {
+  success: boolean;
+  items?: PolicyDraft[];
   message?: string;
 }
 
@@ -254,6 +292,38 @@ export async function requestPolicyRecommendation(
     notes,
     rawText: response.recommendation.rawText,
   };
+}
+
+export async function requestForecastRecommendation(
+  payload: ForecastRecommendationPayload,
+): Promise<ForecastRecommendationResult> {
+  const response = await post<ForecastRecommendationApiResponse>('/policies/recommend-forecast', payload);
+
+  if (!response.success || !response.recommendation) {
+    const message = response.error?.trim() || '추천값을 생성하지 못했습니다.';
+    throw new Error(message);
+  }
+
+  return response.recommendation;
+}
+
+export async function fetchPolicies(): Promise<PolicyDraft[]> {
+  const response = await get<PolicyListResponse>('/policies', { timeoutMs: POLICIES_REQUEST_TIMEOUT_MS });
+
+  if (!response.success) {
+    const message = response.message?.trim() || '정책을 불러오지 못했습니다.';
+    throw new Error(message);
+  }
+
+  const items = Array.isArray(response.items) ? response.items : [];
+
+  return items.map((item) => ({
+    sku: item.sku,
+    forecastDemand: item.forecastDemand ?? null,
+    demandStdDev: item.demandStdDev ?? null,
+    leadTimeDays: item.leadTimeDays ?? null,
+    serviceLevelPercent: item.serviceLevelPercent ?? null,
+  }));
 }
 
 export async function savePolicies(policies: PolicyDraft[]): Promise<void> {

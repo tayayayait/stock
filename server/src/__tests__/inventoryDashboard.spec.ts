@@ -180,6 +180,31 @@ async function main() {
     );
     assert.ok(Number.isFinite(analysisBody.totals.currentOnHand));
 
+    const analysisWithSkuResponse = await server.inject({
+      method: 'GET',
+      url: `/api/inventory/analysis?from=${fromISO}&to=${toISO}&warehouseCode=WH-SEOUL&sku=SKU-COFFEE`,
+    });
+    assert.equal(analysisWithSkuResponse.statusCode, 200);
+
+    const analysisWithSkuBody = analysisWithSkuResponse.json() as {
+      scope: { warehouseCode: string | null; sku: string | null };
+      range: { dayCount: number };
+      movementSeries: Array<{ date: string; inbound: number; outbound: number; adjustments: number }>;
+      stockSeries: Array<{ date: string; onHand: number; available: number; safetyStock: number }>;
+    };
+    assert.equal(analysisWithSkuBody.scope.warehouseCode, 'WH-SEOUL');
+    assert.equal(analysisWithSkuBody.scope.sku, 'SKU-COFFEE');
+    assert.equal(analysisWithSkuBody.movementSeries.length, analysisWithSkuBody.range.dayCount);
+    assert.equal(analysisWithSkuBody.stockSeries.length, analysisWithSkuBody.range.dayCount);
+    assert.ok(
+      analysisWithSkuBody.stockSeries.every(
+        (point) =>
+          Number.isFinite(point.onHand) &&
+          Number.isFinite(point.available) &&
+          Number.isFinite(point.safetyStock),
+      ),
+    );
+
     const warehouseItemsResponse = await server.inject({
       method: 'GET',
       url: `/api/inventory/warehouse-items?from=${fromISO}&to=${toISO}&warehouseCode=WH-SEOUL`,

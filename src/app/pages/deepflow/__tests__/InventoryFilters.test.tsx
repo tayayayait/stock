@@ -207,7 +207,7 @@ describe('DeepflowDashboard inventory filters', () => {
       tableQueries.getByText('H4I5J6K');
       tableQueries.getByText('총입고량');
       tableQueries.getByText('총출고량');
-      tableQueries.getByText('재고소진예상일(ETA)');
+      tableQueries.getByText('재고소진예상일(YYYY-MM-DD)');
       tableQueries.getByText('초과재고율');
     });
 

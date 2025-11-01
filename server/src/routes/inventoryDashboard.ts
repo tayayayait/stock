@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 
+import { findForecastProductBySku } from '../data/forecastSources.js';
 import { listInventoryForSku } from '../stores/inventoryStore.js';
+import { getPolicyDraft } from '../stores/policiesStore.js';
 import {
   getDailyMovementHistory,
   summarizeMovementTotals,
@@ -8,12 +10,98 @@ import {
 } from '../stores/movementAnalyticsStore.js';
 import { __getProductRecords } from './products.js';
 
-type RiskLabel = '정상' | '결품위험' | '과잉';
+const RISK_STABLE = '\uC815\uC0C1';
+const RISK_SHORTAGE = '\uACB0\uD488\uC704\uD5D8';
+const RISK_OVERSTOCK = '\uACFC\uC694';
+type RiskLabel = typeof RISK_STABLE | typeof RISK_SHORTAGE | typeof RISK_OVERSTOCK;
 
-const RISK_ORDER: RiskLabel[] = ['정상', '결품위험', '과잉'];
-const SAFETY_DAYS = 12;
+const RISK_ORDER: RiskLabel[] = [RISK_STABLE, RISK_SHORTAGE, RISK_OVERSTOCK];
+const normalizeSku = (value: string): string => value.trim().toUpperCase();
+const SERVICE_LEVEL_Z_TABLE: Array<{ percent: number; z: number }> = [
+  { percent: 90, z: 1.2816 },
+  { percent: 95, z: 1.6449 },
+  { percent: 98, z: 2.0537 },
+  { percent: 99, z: 2.3263 },
+];
+const DEFAULT_SERVICE_LEVEL_PERCENT = 95;
+const DEFAULT_LEAD_TIME_DAYS = 14;
 const DEFAULT_MOVEMENT_WINDOW_DAYS = 60;
 const TREND_WINDOW_DAYS = 7;
+
+const resolveServiceLevelZ = (percent: number): number => {
+  if (!Number.isFinite(percent)) {
+    return 0;
+  }
+
+  let nearest = SERVICE_LEVEL_Z_TABLE[0];
+  let minDiff = Math.abs(percent - nearest.percent);
+
+  for (const entry of SERVICE_LEVEL_Z_TABLE) {
+    const diff = Math.abs(percent - entry.percent);
+    if (diff < minDiff) {
+      nearest = entry;
+      minDiff = diff;
+    }
+  }
+
+  return nearest.z;
+};
+
+const resolveServiceLevelPercent = (product: ProductRecord): number => {
+  switch (product.risk as RiskLabel | undefined) {
+    case RISK_SHORTAGE:
+      return 98;
+    case RISK_OVERSTOCK:
+      return 90;
+    default:
+      return DEFAULT_SERVICE_LEVEL_PERCENT;
+  }
+};
+
+const resolveLeadTimeDays = (product: ProductRecord): number => {
+  const forecast = findForecastProductBySku(product.sku);
+  if (forecast && Number.isFinite(forecast.leadTimeDays)) {
+    return Math.max(0, forecast.leadTimeDays);
+  }
+  return DEFAULT_LEAD_TIME_DAYS;
+};
+
+const computeSafetyStock = (product: ProductRecord): number => {
+  const policy = getPolicyDraft(product.sku);
+
+  const sigmaCandidate = policy?.demandStdDev;
+  const sigma =
+    Number.isFinite(sigmaCandidate ?? NaN) && (sigmaCandidate ?? 0) > 0
+      ? Math.max(sigmaCandidate as number, 0)
+      : Number.isFinite(product.dailyStd)
+        ? Math.max(product.dailyStd, 0)
+        : 0;
+  if (sigma <= 0) {
+    return 0;
+  }
+
+  const serviceLevelCandidate = policy?.serviceLevelPercent;
+  const serviceLevelPercent =
+    Number.isFinite(serviceLevelCandidate ?? NaN) && (serviceLevelCandidate ?? 0) > 0
+      ? serviceLevelCandidate as number
+      : resolveServiceLevelPercent(product);
+  const z = resolveServiceLevelZ(serviceLevelPercent);
+  if (z <= 0) {
+    return 0;
+  }
+
+  const leadTimeCandidate = policy?.leadTimeDays;
+  const leadTimeDays =
+    Number.isFinite(leadTimeCandidate ?? NaN) && (leadTimeCandidate ?? 0) > 0
+      ? leadTimeCandidate as number
+      : resolveLeadTimeDays(product);
+  if (!Number.isFinite(leadTimeDays) || leadTimeDays <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.round(z * sigma * Math.sqrt(leadTimeDays)));
+};
+
 
 const toSafeNumber = (value: unknown): number =>
   Number.isFinite(value as number) ? Math.max(0, Number(value)) : 0;
@@ -359,7 +447,7 @@ const aggregateTotalsForWarehouse = (
       totals.onHand += summary.onHand;
       totals.reserved += summary.reserved;
       if (!warehouseCode || summary.entries.length > 0 || summary.onHand > 0 || summary.reserved > 0) {
-        totals.safetyStock += Math.round(Math.max(product.dailyAvg, 0) * SAFETY_DAYS);
+        totals.safetyStock += computeSafetyStock(product);
       }
       return totals;
     },
@@ -410,7 +498,7 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
     const totalReserved = products.reduce((sum, product) => sum + toSafeNumber(product.reserved), 0);
     const totalAvailable = calculateAvailable(totalOnHand, totalReserved);
 
-    const shortageSkuCount = products.filter((product) => product.risk === '결품위험').length;
+    const shortageSkuCount = products.filter((product) => product.risk === RISK_SHORTAGE).length;
     const shortageRate = skuCount > 0 ? shortageSkuCount / skuCount : 0;
 
     const dosSamples = products
@@ -452,8 +540,7 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
       }))
       .sort((a, b) => b.onHand - a.onHand);
 
-    const safetyStockFor = (product: (typeof products)[number]) =>
-      Math.round(Math.max(product.dailyAvg, 0) * SAFETY_DAYS);
+    const safetyStockFor = (product: (typeof products)[number]) => computeSafetyStock(product);
 
     const inventoryFlags = products.map((product) => {
       const available = calculateAvailable(product.onHand, product.reserved);
@@ -542,6 +629,7 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
       to?: string;
       warehouseCode?: string;
       groupBy?: string;
+      sku?: string;
     };
 
     let range: AnalysisRange;
@@ -554,21 +642,29 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
     const scope =
       typeof query.warehouseCode === 'string' && query.warehouseCode.trim() ? query.warehouseCode.trim() : null;
     const groupBy = resolveGroupBy(range, typeof query.groupBy === 'string' ? query.groupBy : undefined);
+    const skuCandidate =
+      typeof query.sku === 'string' && query.sku.trim().length > 0 ? normalizeSku(query.sku) : null;
 
     const products = __getProductRecords();
+    const scopedProducts =
+      skuCandidate !== null
+        ? products.filter((product) => normalizeSku(product.sku) === skuCandidate)
+        : products;
     const movementPoints = getDailyMovementHistory({
       from: range.from,
       to: range.to,
       warehouseCode: scope ?? undefined,
+      sku: skuCandidate ?? undefined,
     });
     const dailySeries = zeroFillDailySeries(range, movementPoints);
     const totals = summarizeMovementTotals({
       from: range.from,
       to: range.to,
       warehouseCode: scope ?? undefined,
+      sku: skuCandidate ?? undefined,
     });
 
-    const currentTotals = aggregateTotalsForWarehouse(products, scope);
+    const currentTotals = aggregateTotalsForWarehouse(scopedProducts, scope);
 
     const totalNet = dailySeries.reduce((sum, point) => sum + point.net, 0);
     const startingOnHand = currentTotals.onHand - totalNet;
@@ -595,6 +691,7 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
       },
       scope: {
         warehouseCode: scope,
+        sku: skuCandidate,
       },
       totals: {
         inbound: totals.inbound,
@@ -674,10 +771,11 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
         if (!hasInventory && skuInbound === 0 && skuOutbound === 0) {
           return null;
         }
+        const avgDailyInboundSku = range.dayCount > 0 ? skuInbound / range.dayCount : 0;
         const avgDailyOutboundSku = range.dayCount > 0 ? skuOutbound / range.dayCount : 0;
         const stockoutEtaSku = avgDailyOutboundSku > 0 ? summary.available / avgDailyOutboundSku : null;
         const projectedStockoutDateSku = computeProjectedStockoutDate(summary.available, avgDailyOutboundSku);
-        const safetyStock = Math.round(Math.max(product.dailyAvg, 0) * SAFETY_DAYS);
+        const safetyStock = computeSafetyStock(product);
         return {
           sku: product.sku,
           name: product.name,
@@ -688,6 +786,7 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
           inbound: skuInbound,
           outbound: skuOutbound,
           safetyStock,
+          avgDailyInbound: avgDailyInboundSku,
           avgDailyOutbound: avgDailyOutboundSku,
           stockoutEtaDays: stockoutEtaSku,
           projectedStockoutDate: projectedStockoutDateSku,
@@ -713,6 +812,7 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
       totals: {
         inbound: inboundTotal,
         outbound: outboundTotal,
+        avgDailyInbound: range.dayCount > 0 ? inboundTotal / range.dayCount : 0,
         avgDailyOutbound,
         onHand: warehouseTotals.onHand,
         reserved: warehouseTotals.reserved,
@@ -731,3 +831,4 @@ export default async function inventoryDashboardRoutes(server: FastifyInstance) 
     });
   });
 }
+
