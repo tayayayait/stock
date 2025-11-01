@@ -1,0 +1,44 @@
+[
+  {
+    "sku": "SKU-5DD26604",
+    "forecastDemand": 0,
+    "demandStdDev": 0,
+    "leadTimeDays": 14,
+    "serviceLevelPercent": 95
+  },
+  {
+    "sku": "SKU-5FAF2F6C",
+    "forecastDemand": 0,
+    "demandStdDev": 0,
+    "leadTimeDays": 14,
+    "serviceLevelPercent": 95
+  },
+  {
+    "sku": "SKU-BFE21432",
+    "forecastDemand": 32,
+    "demandStdDev": 2,
+    "leadTimeDays": 14,
+    "serviceLevelPercent": 95
+  },
+  {
+    "sku": "SKU-C7C5AD3C",
+    "forecastDemand": 0,
+    "demandStdDev": 1,
+    "leadTimeDays": 14,
+    "serviceLevelPercent": 95
+  },
+  {
+    "sku": "SKU-AB5F885C",
+    "forecastDemand": 1,
+    "demandStdDev": 1,
+    "leadTimeDays": 14,
+    "serviceLevelPercent": 95
+  },
+  {
+    "sku": "SKU-DE167A57",
+    "forecastDemand": 0,
+    "demandStdDev": 0,
+    "leadTimeDays": 14,
+    "serviceLevelPercent": 95
+  }
+]

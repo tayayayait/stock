@@ -1,0 +1,26 @@
+{
+  "name": "deepflow-inventory-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc --project tsconfig.json",
+    "lint": "tsc --noEmit",
+    "test": "tsx src/__tests__/health.test.ts && tsx src/__tests__/forecast.test.ts && tsx src/__tests__/warehouses.spec.ts && tsx src/__tests__/locations.spec.ts && tsx src/__tests__/products.spec.ts && tsx src/__tests__/categories.spec.ts && tsx src/__tests__/movements.test.ts && tsx src/__tests__/inventoryDashboard.spec.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.4.2",
+    "@fastify/multipart": "^8.3.1",
+    "dotenv": "^17.2.3",
+    "fastify": "^4.26.2",
+    "openai": "^6.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.4.5"
+  }
+}
